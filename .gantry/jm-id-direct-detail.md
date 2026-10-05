@@ -125,4 +125,65 @@ JM 源码与本地 upstream/master（ca313756）此前无差异；未刷新远�
 
 ## Code
 
-功能源码已实现，阶段提交后在此记录带提交号的源码快照。
+日期：2026-10-05。实现提交：`b1791fa236f24fe55f228f61bcfc6f979a1aded2`。
+
+以下保存新增属性、查询入口和局部转换的原样片段；完整源码、测试和夹具以该提交为准。此快照不作为第二份可编辑实现。
+
+```kotlin
+    private val albumIdPattern = Regex("[1-9][0-9]*")
+
+    override suspend fun getListPage(page: Int, order: SortOrder, filter: ContentListFilter): List<Content> {
+        val albumId = filter.query?.trim()?.takeIf { albumIdPattern.matches(it) }
+        if (albumId != null) {
+            return if (page == searchPaginator.firstPage) listOf(searchAlbum(albumId)) else emptyList()
+        }
+        ensureDomains()
+        val sort = sortParam(order)
+        val weeklyTag = filter.tags.firstOrNull { it.key.startsWith("w:") }
+        val categoryTag = filter.tags.firstOrNull { it.key.startsWith("c:") }
+        // 其余标签（含无前缀的详情页标签）都作为搜索关键字
+        val searchTags = filter.tags.filterNot { it.key.startsWith("c:") || it.key.startsWith("w:") }
+
+        // jm.js 里分类标签走 categories/filter，不与搜索组合
+        val keyword = buildKeyword(filter.query, searchTags)
+        return when {
+            !keyword.isNullOrBlank() -> search(keyword, page, sort)
+            weeklyTag != null -> weekList(weeklyTag.key.removePrefix("w:"), order, page)
+            categoryTag != null -> categoryList(sort, page, categoryTag.key.removePrefix("c:"))
+            else -> promote(sort, page)
+        }
+    }
+
+    private suspend fun searchAlbum(inputId: String): Content {
+        val path = "/album?id=$inputId"
+        val jsonText = apiGet(path)
+        val json = try {
+            JSONObject(jsonText)
+        } catch (e: JSONException) {
+            throw ParseException("JM 编号 $inputId: 无效作品响应", "$baseUrl$path", e)
+        }
+        val returnedId = (json.getStringOrNull("id") ?: json.getStringOrNull("album_id"))
+            ?.takeIf { albumIdPattern.matches(it) }
+            ?: throw ParseException("JM 编号 $inputId: 缺少有效作品 id", "$baseUrl$path")
+        if ((json.opt("name") as? String).isNullOrBlank()) {
+            throw ParseException("JM 编号 $inputId: 缺少作品 name", "$baseUrl$path")
+        }
+
+        // /album 的作者是数组；仅规范化本次响应，保持其他列表调用方的映射不变。
+        json.put("id", returnedId)
+        json.put("author", (json.optJSONArray("author")?.opt(0) as? String).orEmpty())
+        json.put("description", (json.opt("description") as? String).orEmpty())
+        val comic = parseComic(json)
+            ?: throw ParseException("JM 编号 $inputId: 无有效作品", "$baseUrl$path")
+        val tags = buildSet {
+            val array = json.optJSONArray("tags")
+            if (array != null) {
+                for (i in 0 until array.length()) {
+                    val tag = (array.opt(i) as? String)?.takeIf { it.isNotBlank() } ?: continue
+                    add(ContentTag(tag, tag, source))
+                }
+            }
+        }
+        return comic.copy(tags = tags)
+    }
+```

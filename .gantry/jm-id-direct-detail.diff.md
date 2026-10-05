@@ -1,6 +1,7 @@
 ---
 baseline_commit: 53de8bfa7e57e84122415a65bcc8fe1d17935970
-last_diff_check: 2026-10-05T19:30:03+08:00
+last_diff_commit: b1791fa236f24fe55f228f61bcfc6f979a1aded2
+last_diff_check: 2026-10-05T20:08:46+08:00
 guidance: guided
 ---
 
@@ -34,3 +35,4 @@ guidance: guided
 - 2026-10-05：按用户要求及新版 dev-workflow 重写为设计约束、实现建议和待验证假设。第 1–4 项与第 2.1 项正文及确认保留；未批准的第 5 项整包草案撤回，函数数目、夹具结构和测试接线不再作为审批门槛。核对未增加行为决定，恢复原行为审阅状态，implementation 仍 pending；方案由 248 行缩为 118 行，未声称实际 token 或费用节省。
 - 2026-10-05：接续消息明确授权实施当前方案，更新 implementation=authorized。GitNexus 使用索引记录的本机 1.6.12 CLI 恢复可用；索引基线至 fea3db76 无源码差异，已有入口证据继续有效。未新增行为或结构决定。
 - 2026-10-05：对照基线和 fea3db76 核对实际实现与记录差异；编号入口及局部响应规范化满足原约束，parseComic 和既有公共签名保持。修正测试接线后取得功能 RED，最终 37 用例、compileKotlin、jar 通过；D8 打包成功，加载和用户验收待执行。稳定性复核无新设计项，implementation 授权继续有效。
+- 2026-10-05：实现及授权、验证记录已阶段提交为 b1791fa2；在原 Gantry 的 Code 节保存带该提交号的源码快照。此后仅补齐文档，源码、测试及产物输入未变化，复用上述通过证据，不重复构建。
