@@ -104,3 +104,7 @@ local.properties
 yealico_rules_cache/
 .pi-weave
 .mindfs
+
+# Local code intelligence
+/.serena/
+/.gitnexus/
