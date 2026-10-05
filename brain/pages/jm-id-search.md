@@ -5,7 +5,7 @@ category: project
 status: active
 tags: [jm, search]
 created: "2026-10-05T17:50:04"
-updated: "2026-10-05T19:49:51"
+updated: "2026-10-05T20:17:37"
 ---
 
 <!-- compiled_truth -->
@@ -40,6 +40,10 @@ PRD.md 的 REQ-001 为 JM 编号搜索：输入作品编号后显示接口返回
 方案仍维护在 .gantry/jm-id-direct-detail.md，沿用历史路径及分支名。用户已确认第 1–4 项及第 2.1 项行为。按用户要求和新版 dev-workflow 重写方案后，保留行为与薄适配边界，将函数拆分、局部映射写法和测试接线列为可调整建议，并记录实施早期验证办法及失败边界。此前未批准的第 5 项及固定 A–J 蓝图已撤回，不再构成审批门槛；原行为确认继续有效，用户已于 2026-10-05 接续消息明确授予当前稳定方案实现授权，实施后仍需独立记录加载及用户验收。
 
 薄适配要求仍为职责集中、复用既有网络与身份映射、保护普通搜索和共享调用方；不修改宿主、公共接口、共享分页与网络基础设施。隔离离线测试不得读取本机凭据或访问真实网络，测试结构可调整。真实交付遵循已有 D8 打包流程，编译、加载与用户验收分别记录。
+
+## 验收交付方式
+
+用户通过 Kotoyomi 的仓库 URL 更新插件后开始验收，因此验收交付需先发布既有 repo 分支并推送实现分支；只交付本地 JAR 不能满足该流程。仓库根 URL 为 https://raw.githubusercontent.com/BarrayAllen0818/kotoyomi-plugins/repo/ ，索引为其 index.min.json，插件为 apk/plugin.jar。用户于 2026-10-05 明确授权本次远端验收发布，覆盖此前本轮不推送或部署的限制。主线仍须用户验收后才能合并；远端发布、HTTP 校验、宿主加载和用户验收分别记录。
 
 
 ## Timeline
@@ -108,4 +112,10 @@ PRD.md 的 REQ-001 为 JM 编号搜索：输入作品编号后显示接口返回
   kind: decision
   summary: "用户明确授权实施当前稳定方案，保留行为确认与交付边界"
   source: "2026-10-05 用户接续实现消息"
+  affects: [jm-id-search]
+
+- time: 2026-10-05T20:17:37
+  kind: decision
+  summary: "用户确认验收前通过仓库 URL 发布更新，本地 JAR 交付不足以开始验收"
+  source: "2026-10-05 用户明确要求推送远端用于 Kotoyomi 仓库 URL 更新"
   affects: [jm-id-search]

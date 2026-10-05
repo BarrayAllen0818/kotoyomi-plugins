@@ -101,7 +101,7 @@ JM 源码与本地 upstream/master（ca313756）此前无差异；未刷新远�
 1. 核对源码、已确认文档和实现授权；先验证最小测试接线，再使代表性的编号行为测试因缺少功能而失败，随后实现局部补丁并通过适用回归。
 2. 执行 `./gradlew.bat test --tests "org.skepsun.kototoro.parsers.site.zh.JmComicTest" --no-daemon` 及 `./gradlew.bat compileKotlin jar --no-daemon`。运行 Gradle 优先使用 CI 的 JDK 21，保留 JVM toolchain 8。只因新变更或未解决风险扩大验证。
 3. 审查实际 diff 的职责边界和受影响调用方；记录有意义的实现调整及证据，不逐项记录命名和语法变化。按 Git 策略阶段提交，既有文档修改保留，不夹带宿主或规则修改。
-4. 按现有 release 工作流制作 dex plugin.jar，构建产物放项目 build 等既有 D 盘目录，不为验证推送主线或触发部署。分别报告离线测试/编译、实际插件加载、用户验收。
+4. 按现有 release 工作流制作 dex plugin.jar，构建产物放项目 build 等既有 D 盘目录。用户后续明确要求通过远端 URL 更新仓库再验收：将已验证产物发布到既有 repo 分支并推送实现分支，不推送或合并主线。分别报告离线测试/编译、发布、实际插件加载、用户验收。
 5. 用户在现有宿主载入新插件后验证有效/无效编号、返回编号不同的作品、点击详情、关键词和全局 JM 结果；确认作品未被现有屏蔽规则隐藏。界面操作由用户完成，需要 ADB 时沿用既有连接及失败停止规则。未验收不合并。
 
 ## 确认历史与当前状态
@@ -120,8 +120,16 @@ JM 源码与本地 upstream/master（ca313756）此前无差异；未刷新远�
 - 核对本次及完整任务差异，未发现阻塞性缺陷；其他调用方继续使用未改变的 parseComic，非编号分支保持原代码。未运行可能包含在线请求的全仓测试；当前修改仅触及 JM 局部路径。
 - `javap -public` 前后对比：既有签名无删除或变化；仅新增编译器为私有挂起函数生成的 `access$searchAlbum` 合成桥接方法。ContentParser、Content、共享分页器、依赖及发布工作流未修改。
 - 按 release 工作流执行 D8 36.0.0：`d8.bat --release --lib D:/Tools/Android/sdk/platforms/android-34/android.jar --output build/jm-plugin build/libs/kototoro-parsers-1.0.jar`，再将 classes.dex 封装为 `build/jm-plugin/plugin.jar`。转换和封装退出码均为 0；DEX magic 为 dex 035，包含 JmParser 及 searchAlbum。D8 提示宿主依赖类型（Kotlin、OkHttp、JSoup 等）未在单库输入中提供；实际加载兼容性仍待宿主验证。
-- JVM JAR SHA-256：`33066545784848AC9031DF21FFC37E208A2D85D3F37CF43C5DBAB73B60632B0B`；dex plugin.jar SHA-256：`31B70BC64392C9DF596E1067371D5B446E6ED9E9450FA084A7BB17A805474AE7`。产物、日志与缓存不提交。
-- 未执行在线接口验证、插件导入/加载、设备界面验收、合并、推送或部署。用户将本次 plugin.jar 导入现有兼容宿主并确认加载成功后，再验证有效/无效编号、普通关键词、全局 JM 子结果、点击详情及分页；返回编号不同的线上样例不存在时注明未测。开始前确认目标作品未被现有内容屏蔽隐藏，失败时反馈输入、步骤、实际表现和报错，不提供凭据。
+- JVM JAR SHA-256：`33066545784848AC9031DF21FFC37E208A2D85D3F37CF43C5DBAB73B60632B0B`；dex plugin.jar SHA-256：`31B70BC64392C9DF596E1067371D5B446E6ED9E9450FA084A7BB17A805474AE7`。按后续发布授权，dex 产物仅进入 repo 发布分支；源码分支不提交构建产物、日志或缓存。
+- 插件已按用户后续授权发布远端，细节见下节。未执行在线 JM 接口验证、宿主插件加载、设备界面验收或主线合并。用户在 Kotoyomi 通过仓库 URL 更新并确认加载 1.0.135 后，再验证有效/无效编号、普通关键词、全局 JM 子结果、点击详情及分页；返回编号不同的线上样例不存在时注明未测。开始前确认目标作品未被现有内容屏蔽隐藏，失败时反馈输入、步骤、实际表现和报错，不提供凭据。
+
+## 远端验收发布（2026-10-05）
+
+- 用户明确要求推送远端，通过 URL 更新 Kotoyomi 仓库后开始验收；这项新授权覆盖此前“不推送或部署”的本轮边界，仍不构成验收通过或主线合并授权。
+- 发布提交 `9e0bfa996eed9e8a459446198694c7095cb09df5` 是原 repo 提交 `58950ebc43b53cbfd8d4523544e870fd96b0c1cc` 的子提交；只更新 `apk/plugin.jar` 及 `index.min.json` 的 code/version（134 → 135、1.0.134 → 1.0.135），保留 .nojekyll、其他索引字段及发布历史，无强制推送。
+- 原子推送实现分支和发布分支成功，master 仍为 `53de8bfa7e57e84122415a65bcc8fe1d17935970`。实现源码与测试未变化，复用 37 个用例、JVM 构建及 D8 的有效证据，不重复构建。
+- 仓库根 URL：`https://raw.githubusercontent.com/BarrayAllen0818/kotoyomi-plugins/repo/`；索引：`https://raw.githubusercontent.com/BarrayAllen0818/kotoyomi-plugins/repo/index.min.json`；插件：`https://raw.githubusercontent.com/BarrayAllen0818/kotoyomi-plugins/repo/apk/plugin.jar`。
+- HTTP 实测索引 version=1.0.135、code=135；下载发布插件，SHA-256 与已验证产物一致：`31B70BC64392C9DF596E1067371D5B446E6ED9E9450FA084A7BB17A805474AE7`，JAR 含 classes.dex。Git 与 HTTP 发布通过不代替 Kotoyomi 的真实加载和用户界面验收。
 
 ## Code
 

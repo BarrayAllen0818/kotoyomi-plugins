@@ -1,7 +1,7 @@
 ---
 baseline_commit: 53de8bfa7e57e84122415a65bcc8fe1d17935970
-last_diff_commit: b1791fa236f24fe55f228f61bcfc6f979a1aded2
-last_diff_check: 2026-10-05T20:08:46+08:00
+last_diff_commit: f4d01163bd86146a5addb3a2d47f7fc5fc6aaa1e
+last_diff_check: 2026-10-05T20:18:35+08:00
 guidance: guided
 ---
 
@@ -36,3 +36,4 @@ guidance: guided
 - 2026-10-05：接续消息明确授权实施当前方案，更新 implementation=authorized。GitNexus 使用索引记录的本机 1.6.12 CLI 恢复可用；索引基线至 fea3db76 无源码差异，已有入口证据继续有效。未新增行为或结构决定。
 - 2026-10-05：对照基线和 fea3db76 核对实际实现与记录差异；编号入口及局部响应规范化满足原约束，parseComic 和既有公共签名保持。修正测试接线后取得功能 RED，最终 37 用例、compileKotlin、jar 通过；D8 打包成功，加载和用户验收待执行。稳定性复核无新设计项，implementation 授权继续有效。
 - 2026-10-05：实现及授权、验证记录已阶段提交为 b1791fa2；在原 Gantry 的 Code 节保存带该提交号的源码快照。此后仅补齐文档，源码、测试及产物输入未变化，复用上述通过证据，不重复构建。
+- 2026-10-05：用户要求验收前通过远端 URL 更新插件，明确授权推送及验收发布。既有 repo 分支以保留历史的快进提交 9e0bfa99 发布 1.0.135，仅更新插件及索引版本；实现分支同步推送，master 保留。HTTP 索引及下载产物 SHA-256 验证通过，尚未用户验收。仅更新交付记录，不改变产品行为或源码快照。
