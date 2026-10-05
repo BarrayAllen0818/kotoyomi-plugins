@@ -5,7 +5,7 @@ category: project
 status: active
 tags: [jm, search]
 created: "2026-10-05T17:50:04"
-updated: "2026-10-05T20:17:37"
+updated: "2026-10-05T21:21:52"
 ---
 
 <!-- compiled_truth -->
@@ -44,6 +44,10 @@ PRD.md 的 REQ-001 为 JM 编号搜索：输入作品编号后显示接口返回
 ## 验收交付方式
 
 用户通过 Kotoyomi 的仓库 URL 更新插件后开始验收，因此验收交付需先发布既有 repo 分支并推送实现分支；只交付本地 JAR 不能满足该流程。仓库根 URL 为 https://raw.githubusercontent.com/BarrayAllen0818/kotoyomi-plugins/repo/ ，索引为其 index.min.json，插件为 apk/plugin.jar。用户于 2026-10-05 明确授权本次远端验收发布，覆盖此前本轮不推送或部署的限制。主线仍须用户验收后才能合并；远端发布、HTTP 校验、宿主加载和用户验收分别记录。
+
+## 当前验收结论
+
+2026-10-05 用户在远端 repo 版本 1.0.135 交付后明确回复“验收通过”，当前 JM 编号搜索整体验收完成。自动证据为 37 个隔离离线用例、compileKotlin、jar 和 D8 打包通过；验收产物 SHA-256 为 31B70BC64392C9DF596E1067371D5B446E6ED9E9450FA084A7BB17A805474AE7。没有逐项用户设备操作日志，不将整体确认扩展成具体场景实测。现有源码及产物未变化，按 Git 策略进入主线合并与自动推送，不重复构建或用户验收。
 
 
 ## Timeline
@@ -118,4 +122,10 @@ PRD.md 的 REQ-001 为 JM 编号搜索：输入作品编号后显示接口返回
   kind: decision
   summary: "用户确认验收前通过仓库 URL 发布更新，本地 JAR 交付不足以开始验收"
   source: "2026-10-05 用户明确要求推送远端用于 Kotoyomi 仓库 URL 更新"
+  affects: [jm-id-search]
+
+- time: 2026-10-05T21:21:52
+  kind: decision
+  summary: "用户明确验收远端 1.0.135 通过，按策略进入主线收尾"
+  source: "2026-10-05 用户回复：验收通过"
   affects: [jm-id-search]
