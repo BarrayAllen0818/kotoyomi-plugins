@@ -9,10 +9,12 @@ guidance: guided
 ## Files in scope
 
 - PRD.md：REQ-001 当前为 JM 编号搜索；保留原确认及取消自动跳转的变更记录。
-- .gantry/jm-id-direct-detail.md：保留已确认行为与薄适配边界，局部实现列为建议，明确待验证假设；固定实现蓝图已撤回，功能代码未修改。
+- .gantry/jm-id-direct-detail.md：已确认行为、薄适配边界、实现证据及源码快照；固定实现蓝图已撤回。
 - .gantry/jm-id-direct-detail.diff.md：方案差异记录。
 - brain/pages/jm-id-search.md、brain/index.md：通过 brain CLI 保存当前编号搜索需求。
 - brain/pages/jm-id-direct-detail.md：通过 brain CLI 归档原直达详情需求，保留撤回原因。
+- src/main/kotlin/org/skepsun/kototoro/parsers/site/zh/JmComicParser.kt：入口编号分流与局部详情响应适配。
+- src/test/kotlin/org/skepsun/kototoro/parsers/site/zh/JmComicTest.kt、src/test/resources/fixtures/jm/：隔离离线测试上下文和最小合成夹具。
 
 ## Triaged irrelevant
 
@@ -30,3 +32,5 @@ guidance: guided
 - 2026-10-05：用户确认第 4 项兼容范围，全部伪代码获批；审查反馈落地、编号映射、查询路径、分页与错误处理后未出现新待决项。标记 annotations/stabilization complete，implementation 保持 pending。
 - 2026-10-05：用户要求补足可交给编码 AI 的详细方案。读取当前 JM 初始化、apiGet、parseComic、getDetails、测试上下文及发布工作流，补入 A–J 实现蓝图。原行为步骤保持 accept，新增实现草案第 5 项 open，重置文档整体审阅标记，未修改生产源码、测试或宿主。
 - 2026-10-05：按用户要求及新版 dev-workflow 重写为设计约束、实现建议和待验证假设。第 1–4 项与第 2.1 项正文及确认保留；未批准的第 5 项整包草案撤回，函数数目、夹具结构和测试接线不再作为审批门槛。核对未增加行为决定，恢复原行为审阅状态，implementation 仍 pending；方案由 248 行缩为 118 行，未声称实际 token 或费用节省。
+- 2026-10-05：接续消息明确授权实施当前方案，更新 implementation=authorized。GitNexus 使用索引记录的本机 1.6.12 CLI 恢复可用；索引基线至 fea3db76 无源码差异，已有入口证据继续有效。未新增行为或结构决定。
+- 2026-10-05：对照基线和 fea3db76 核对实际实现与记录差异；编号入口及局部响应规范化满足原约束，parseComic 和既有公共签名保持。修正测试接线后取得功能 RED，最终 37 用例、compileKotlin、jar 通过；D8 打包成功，加载和用户验收待执行。稳定性复核无新设计项，implementation 授权继续有效。

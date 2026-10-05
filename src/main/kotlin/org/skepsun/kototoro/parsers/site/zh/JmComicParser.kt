@@ -11,6 +11,7 @@ import okhttp3.Headers
 import okhttp3.Interceptor
 import okhttp3.Response
 import org.json.JSONArray
+import org.json.JSONException
 import org.json.JSONObject
 import org.skepsun.kototoro.parsers.CategorizedFavoritesProvider
 import org.skepsun.kototoro.parsers.ContentFavoriteFolder
@@ -23,6 +24,8 @@ import org.skepsun.kototoro.parsers.ContentSourceParser
 import org.skepsun.kototoro.parsers.config.ConfigKey
 import org.skepsun.kototoro.parsers.core.PagedContentParser
 import org.skepsun.kototoro.parsers.exception.AuthRequiredException
+import org.skepsun.kototoro.parsers.exception.ParseException
+import org.skepsun.kototoro.parsers.util.json.getStringOrNull
 import org.skepsun.kototoro.parsers.model.ContentType
 import org.skepsun.kototoro.parsers.model.Content
 import org.skepsun.kototoro.parsers.model.ContentChapter
@@ -110,6 +113,7 @@ internal class JmParser(
         ),
     )
 
+    private val albumIdPattern = Regex("[1-9][0-9]*")
     private val apiKey = "18comicAPPContent"
     private val dataSecret = "185Hcomic3PAPP7R"
     private val jmVersion = "2.0.16"
@@ -210,6 +214,10 @@ internal class JmParser(
     override fun getRequestHeaders(): Headers = headersBase
 
     override suspend fun getListPage(page: Int, order: SortOrder, filter: ContentListFilter): List<Content> {
+        val albumId = filter.query?.trim()?.takeIf { albumIdPattern.matches(it) }
+        if (albumId != null) {
+            return if (page == searchPaginator.firstPage) listOf(searchAlbum(albumId)) else emptyList()
+        }
         ensureDomains()
         val sort = sortParam(order)
         val weeklyTag = filter.tags.firstOrNull { it.key.startsWith("w:") }
@@ -319,6 +327,39 @@ internal class JmParser(
             parseComic(obj)?.let { result.add(it) }
         }
         return result
+    }
+
+    private suspend fun searchAlbum(inputId: String): Content {
+        val path = "/album?id=$inputId"
+        val jsonText = apiGet(path)
+        val json = try {
+            JSONObject(jsonText)
+        } catch (e: JSONException) {
+            throw ParseException("JM 编号 $inputId: 无效作品响应", "$baseUrl$path", e)
+        }
+        val returnedId = (json.getStringOrNull("id") ?: json.getStringOrNull("album_id"))
+            ?.takeIf { albumIdPattern.matches(it) }
+            ?: throw ParseException("JM 编号 $inputId: 缺少有效作品 id", "$baseUrl$path")
+        if ((json.opt("name") as? String).isNullOrBlank()) {
+            throw ParseException("JM 编号 $inputId: 缺少作品 name", "$baseUrl$path")
+        }
+
+        // /album 的作者是数组；仅规范化本次响应，保持其他列表调用方的映射不变。
+        json.put("id", returnedId)
+        json.put("author", (json.optJSONArray("author")?.opt(0) as? String).orEmpty())
+        json.put("description", (json.opt("description") as? String).orEmpty())
+        val comic = parseComic(json)
+            ?: throw ParseException("JM 编号 $inputId: 无有效作品", "$baseUrl$path")
+        val tags = buildSet {
+            val array = json.optJSONArray("tags")
+            if (array != null) {
+                for (i in 0 until array.length()) {
+                    val tag = (array.opt(i) as? String)?.takeIf { it.isNotBlank() } ?: continue
+                    add(ContentTag(tag, tag, source))
+                }
+            }
+        }
+        return comic.copy(tags = tags)
     }
 
     private suspend fun categoryList(sort: String, page: Int, category: String?): List<Content> {

@@ -2,17 +2,17 @@
 
 **Target:** 实现 PRD.md 的 REQ-001：编号查询返回接口提供的有效作品卡片，由用户点击进入详情；仅修改插件。
 
-<!-- gantry:workflow pseudocode=approved annotations=complete stabilization=complete implementation=pending -->
+<!-- gantry:workflow pseudocode=approved annotations=complete stabilization=complete implementation=authorized -->
 
 ## 阅读与执行边界
 
 “Pseudocode”是用户已逐项确认的行为与接口约束；“实现建议”可在这些约束内依据代码和测试反馈调整。函数名称、数量、夹具组织不构成审批门槛。改变行为、公共契约、关键结构或扩大范围时，才暂停受影响部分并审阅最小修订。
 
-分支沿用 `feat/jm-id-direct-detail`，文档沿用当前路径；direct-detail 是历史名称，当前没有自动跳转需求。本轮仅重写文档，未开始实现，未将旧交接提示中的措辞视作当前实现授权。
+分支沿用 `feat/jm-id-direct-detail`，文档沿用当前路径；direct-detail 是历史名称，当前没有自动跳转需求。用户于 2026-10-05 在接续消息中明确授予当前方案实现授权，沿用既有行为确认。
 
 ## 已核实的实现入口
 
-源码调查基线为 `53de8bfa`；当前两个后续提交仅修改规则和文档。下表来自此前当前源码核对，可在相关文件未变化时复用，不必重新探索整个项目。
+源码调查基线为 `53de8bfa`；实施前的后续提交仅修改规则和文档。下表记录实施前源码事实；本次局部实现及验证见下文，可复用未变化部分的证据。
 
 | 文件 / 符号 | 与实现直接相关的事实 |
 | --- | --- |
@@ -109,9 +109,20 @@ JM 源码与本地 upstream/master（ca313756）此前无差异；未刷新远�
 - 2026-10-05：用户原先要求自动进入详情，后明确取消；当前仅返回卡片，宿主改动撤回。
 - 2026-10-05：用户逐项确认上文第 1–4 项及第 2.1 项；原“返回编号必须等于输入”已被“返回有效作品并使用实际返回编号”取代，原确认不再适用。
 - 2026-10-05：曾新增未获批准的第 5 项及 A–J 详细蓝图；用户随后确认新版 dev-workflow，并要求重写方案。该未决整包提案撤回，局部写法改列为建议，不增加行为或接口决定，不重开已有确认。
-- 当前已核对约束、建议、假设及验证要求的一致性；没有新增必须用户选择的设计项。原行为审阅和稳定性结论继续有效，实现门槛仍为 pending。本轮只处理方案文档，不实现功能。
-- 源码自调查基线未变化，因此复用已有路径核查；测试接线、功能测试、构建、加载及用户验收均尚未执行。新会话先读取本文件当前版本，不沿用已撤回的固定函数数目和测试蓝图。
+- 当前已核对约束、建议、假设及验证要求的一致性；没有新增必须用户选择的设计项。原行为审阅和稳定性结论继续有效；2026-10-05 接续消息已授权实现，implementation 更新为 authorized。
+- 实施前源码自调查基线未变化，复用已有入口核查；本次已完成局部实现、37 个隔离离线用例、JVM 构建与 D8 打包，真实宿主加载及用户验收待执行。新会话先读取本文件当前版本，不沿用已撤回的固定函数数目和测试蓝图。
+
+## 实现与验证证据（2026-10-05）
+
+- `getListPage` 在域名初始化与 `buildKeyword` 前识别原始 query；非第一页立即返回空列表。`searchAlbum` 仅规范化本次详情响应后复用 `parseComic`，按首作者语义和详情标签生成卡片；共享列表映射、getDetails、apiGet 均未改写。
+- 接线先验证普通搜索及每周排序通过；修正测试中嵌套 runTest 后，37 个用例中 23 个因缺少编号功能而失败。实现后全部通过；网络异常断言检查类型、消息及重试次数，不依赖协程堆栈恢复前后的异常对象引用相同。
+- 实际命令：`./gradlew.bat test --tests "org.skepsun.kototoro.parsers.site.zh.JmComicTest" compileKotlin jar --no-daemon -Dorg.gradle.java.installations.paths=D:/Tools/Java/temurin-8,D:/Tools/Java/temurin-21`，运行 JDK 为 `D:/Tools/Java/temurin-21`。结果：37 tests，0 failures/errors/skipped，BUILD SUCCESSFUL。日志及 RED/GREEN XML 位于忽略目录 `build/jm-verification/`。
+- 核对本次及完整任务差异，未发现阻塞性缺陷；其他调用方继续使用未改变的 parseComic，非编号分支保持原代码。未运行可能包含在线请求的全仓测试；当前修改仅触及 JM 局部路径。
+- `javap -public` 前后对比：既有签名无删除或变化；仅新增编译器为私有挂起函数生成的 `access$searchAlbum` 合成桥接方法。ContentParser、Content、共享分页器、依赖及发布工作流未修改。
+- 按 release 工作流执行 D8 36.0.0：`d8.bat --release --lib D:/Tools/Android/sdk/platforms/android-34/android.jar --output build/jm-plugin build/libs/kototoro-parsers-1.0.jar`，再将 classes.dex 封装为 `build/jm-plugin/plugin.jar`。转换和封装退出码均为 0；DEX magic 为 dex 035，包含 JmParser 及 searchAlbum。D8 提示宿主依赖类型（Kotlin、OkHttp、JSoup 等）未在单库输入中提供；实际加载兼容性仍待宿主验证。
+- JVM JAR SHA-256：`33066545784848AC9031DF21FFC37E208A2D85D3F37CF43C5DBAB73B60632B0B`；dex plugin.jar SHA-256：`31B70BC64392C9DF596E1067371D5B446E6ED9E9450FA084A7BB17A805474AE7`。产物、日志与缓存不提交。
+- 未执行在线接口验证、插件导入/加载、设备界面验收、合并、推送或部署。用户将本次 plugin.jar 导入现有兼容宿主并确认加载成功后，再验证有效/无效编号、普通关键词、全局 JM 子结果、点击详情及分页；返回编号不同的线上样例不存在时注明未测。开始前确认目标作品未被现有内容屏蔽隐藏，失败时反馈输入、步骤、实际表现和报错，不提供凭据。
 
 ## Code
 
-尚未实现。
+功能源码已实现，阶段提交后在此记录带提交号的源码快照。

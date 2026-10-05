@@ -1,0 +1,11 @@
+{
+  "content": [{
+    "id": "654321",
+    "name": "繁體標題 123456",
+    "author": "作者甲",
+    "description": "合成作品描述",
+    "category": {"title": "同人"},
+    "category_sub": {"title": "單本"}
+  }],
+  "redirect_aid": "999999"
+}
