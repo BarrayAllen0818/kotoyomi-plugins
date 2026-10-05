@@ -1,58 +1,116 @@
 # JM 编号搜索
 
-**Target:** 实现 PRD.md 的 REQ-001：JM 来源内提交作品编号后返回对应作品卡片，点击后按现有流程进入详情；普通关键词搜索保持原行为，仅修改插件。
+**Target:** 实现 PRD.md 的 REQ-001：编号查询返回接口提供的有效作品卡片，由用户点击进入详情；仅修改插件。
 
-<!-- gantry:workflow pseudocode=pending annotations=pending stabilization=pending implementation=pending -->
+<!-- gantry:workflow pseudocode=approved annotations=complete stabilization=complete implementation=pending -->
 
-## 当前证据与职责
+## 阅读与执行边界
 
-- 插件基线为 `53de8bfa7e57e84122415a65bcc8fe1d17935970`，任务分支为 `feat/jm-id-direct-detail`。沿用现有分支与文档路径，名称保留历史，不代表仍要求自动跳转。
-- `JmParser.getListPage` 将 query 与搜索标签合成关键词；`search` 只调用 `/search` 并解析 content 数组，没有编号查询或导航信号。
-- `JmParser.getDetails` 已调用 `/album?id=...`；`parseComic` 使用 `generateUid("jm:$id")` 构造身份。新增行为必须沿用身份，不改变收藏关联。
-- `ContentParser.getList` 返回 `List<Content>`；接口没有页面导航能力。`AbstractContentParser.resolveLink` 默认返回 null，JM 未覆盖该方法。
-- 宿主现有搜索入口装载并显示插件返回的列表，点击卡片进入详情。当前需求直接复用该流程，宿主代码不在本任务修改范围。
-- JAR 解析器经 `ParserContentRepositoryProvider`、`ParserContentRepository.getList` 调用插件。`JarExtensionLoader` 按 source.name 匹配来源；JM 内部名为 `JMCOMIC`。
-- 插件 JM 文件与本地 `upstream/master`（`ca313756`）无差异。本结论仅针对已有远端跟踪引用，不代表最新上游。
+“Pseudocode”是用户已逐项确认的行为与接口约束；“实现建议”可在这些约束内依据代码和测试反馈调整。函数名称、数量、夹具组织不构成审批门槛。改变行为、公共契约、关键结构或扩大范围时，才暂停受影响部分并审阅最小修订。
+
+分支沿用 `feat/jm-id-direct-detail`，文档沿用当前路径；direct-detail 是历史名称，当前没有自动跳转需求。本轮仅重写文档，未开始实现，未将旧交接提示中的措辞视作当前实现授权。
+
+## 已核实的实现入口
+
+源码调查基线为 `53de8bfa`；当前两个后续提交仅修改规则和文档。下表来自此前当前源码核对，可在相关文件未变化时复用，不必重新探索整个项目。
+
+| 文件 / 符号 | 与实现直接相关的事实 |
+| --- | --- |
+| `src/main/kotlin/org/skepsun/kototoro/parsers/site/zh/JmComicParser.kt`：getListPage、buildKeyword、search | getListPage 先将 query 与标签合并，再请求 /search；编号分支应在 buildKeyword 前识别原始 query |
+| 同文件：apiGet、ensureDomains、refreshImageHost | 已有鉴权、解密、重试、动态域名及图片域名初始化；初始化也会产生请求 |
+| 同文件：parseComic、getDetails | parseComic 生成 jm:<id> 身份、链接和封面，并被推荐、分类、每周、搜索、收藏共用；详情响应 author 是数组，现有 getDetails 取首项 |
+| `src/main/kotlin/org/skepsun/kototoro/parsers/core/PagedContentParser.kt` 与 `util/Paginator.kt`（同 parsers 根目录） | offset 0 对应第一页；返回一条后，offset 1 映射到下一页，无需另建分页器 |
+| `src/test/kotlin/org/koitharu/kotatsu/parsers/ContentLoaderContextMock.kt` | 会读取本机 Cookie、环境变量和 token 文件，不适合作为隔离离线测试的默认上下文 |
+| `.github/workflows/release.yml` | 实际插件包是 JVM JAR 经 D8 转换后封装的含 classes.dex 的 plugin.jar |
+
+JM 源码与本地 upstream/master（ca313756）此前无差异；未刷新远端，不宣称已核实最新上游。
 
 ## Pseudocode
 
-<!-- gantry:step id=gty-jm-query author=ai status=open -->
+<!-- gantry:step id=gty-jm-query author=ai status=accept -->
 1. 在 JM 插件识别查询编号：去除首尾空白后匹配 `[1-9][0-9]*`。编号作为字符串处理；关键词、混合文字、JM 前缀、网址和前导零输入保持现有关键词搜索。编号路径按身份定位，不叠加当前标签、分类或排序条件，也不改写用户保存的筛选设置。
 
-<!-- gantry:step id=gty-jm-plugin author=ai status=open -->
-2. 在 JM 插件 getListPage 中、buildKeyword 之前识别原始 filter.query。编号请求仅在第一页调用 `/album?id=<编号>`，后续页返回空列表。复用 apiGet 的鉴权、解密与域名逻辑；校验响应的作品 ID 与请求相同且名称有效，再返回一条 Content。沿用 `jm:<id>` UID 和现有 URL 格式，正确解析详情响应的作者数组。普通查询走原有代码。
+用户于 2026-10-05 确认本项：纯数字标题也按编号处理；编号查询优先于站点筛选，宿主内容屏蔽仍生效。
 
-<!-- gantry:step id=gty-jm-errors author=ai status=open -->
-3. 编号不存在、响应缺少必要字段或身份不匹配时，返回带 JM 和编号上下文的错误；网络及鉴权错误沿用现有错误流程。不回退成模糊搜索，不采用 search.redirect_aid 隐式替换作品，也不返回伪造的占位作品。
+<!-- gantry:step id=gty-jm-plugin author=ai status=accept -->
+2. 在 JM 插件 getListPage 中、buildKeyword 之前识别原始 filter.query。编号请求仅在第一页调用 `/album?id=<输入编号>`，后续页返回空列表。复用 apiGet 的鉴权、解密与域名逻辑；校验响应具有有效作品 ID 和名称，再返回一条 Content，允许响应 ID 与输入不同。沿用现有 UID 生成规则和 URL 格式，正确解析详情响应的作者数组。普通查询走原有代码。
 
-<!-- gantry:step id=gty-jm-compat author=ai status=open -->
-4. 通过现有 List<Content> 接口返回精确结果，保持 ContentParser、Content 和 JAR ABI 不变。宿主照常显示结果卡片，并沿用成人内容、标签屏蔽、点击详情、刷新和返回行为。本任务不增加导航事件或宿主状态机；更新插件即可提供编号查询能力。其他调用 JM getList 的入口（包括全局搜索中的 JM 子结果）也会收到精确结果，其他来源不变。
+用户于 2026-10-05 确认本项：详情接口仅用于取得数据，结果仍显示为普通卡片；沿用作品身份以保护收藏关联，后续分页不重复请求或返回作品。
 
-## 修改范围与维护成本
+用户随后明确调整：原先要求返回编号与输入相同，现改为编号不同也返回有效作品；这项新确认取代原编号相等约束。
 
-- 当前仓库：`src/main/kotlin/org/skepsun/kototoro/parsers/site/zh/JmComicParser.kt`、`src/test/kotlin/org/skepsun/kototoro/parsers/site/zh/JmComicTest.kt`，按需要增加脱敏离线夹具。
-- 插件负责站点查询，宿主继续展示列表和处理点击。没有共享接口或数据库迁移，不引入依赖。
-- 必要直接补丁集中在 JM 查询入口及作品结果映射；后续同步上游复查编号识别、身份稳定性、分页与普通关键词查询。
-- 宿主仓库、宿主测试及其任务分支均不在修改范围，也不需要为本任务安排宿主工作树。
-- 架构自检仅针对本方案边界：编号与结果判定可离线测试；解析器不依赖导航；无持久化改动、组件反向依赖或新增循环。此为设计检查，不是实现通过证据。
+<!-- gantry:step id=gty-jm-returned-identity author=ai status=accept -->
+2.1. 以响应中实际返回的作品 ID 生成 `jm:<返回编号>` UID、详情 URL 和封面 URL，确保卡片、点击详情与收藏对应同一个返回作品。输入编号仅用于发起查询；不把返回作品的内容与输入编号的身份混合，也不迁移已有收藏。
 
-## 验证计划
+用户于 2026-10-05 确认本项：输入编号与返回编号不同时，以实际返回编号统一确定作品身份、封面及详情链接。
 
-1. 插件离线测试：有效编号的精确结果和 UID、作者数组、原始标题；编号查询不访问 /search；第一页后不重复请求；错误/缺字段/ID 不匹配；普通关键词与标签组合回归。HTTP 通过现有 OkHttp 测试拦截方式返回脱敏夹具，不依赖线上服务。
-2. 分页回归：通过公开 getList 接口验证第一页的一条精确结果及后续空结果，避免仅测 getListPage 而遗漏 Paginator 的 offset 换算。
-3. 实现后执行插件 `gradlew.bat test --tests "org.skepsun.kototoro.parsers.site.zh.JmComicTest" --no-daemon` 与 `compileKotlin`。按现有发布方式验证插件 JAR 可由现有宿主加载，不构建或修改宿主。
-4. 用户验收：载入新版插件，确保 JM 及目标作品未被现有屏蔽规则隐藏；输入有效编号，应停留在列表并显示对应卡片；点击后进入正确详情。另检查无效编号、关键词、翻页以及全局搜索中的 JM 子结果。界面操作由用户完成，自动检查不代替用户验收。
+<!-- gantry:step id=gty-jm-errors author=ai status=accept -->
+3. 编号不存在且接口未返回有效作品、响应缺少必要字段时，返回带 JM 和输入编号上下文的错误；网络及鉴权错误沿用现有错误流程。接口返回有效作品时，即使作品编号与输入不同也正常显示。不回退成关键词搜索，不额外调用 search.redirect_aid 路径，也不返回伪造的占位作品。
 
-## 审阅状态
+用户于 2026-10-05 确认第 3 项并修正编号不匹配分支：仍返回作品；其余失败处理保持。
 
-- 用户已明确要求取消自动跳转，并授权按新范围修改 PRD 和方案。
-- 修订方案仍为 AI 起草，待用户审阅；纯数字识别范围、编号优先于筛选及失败处理尚未因本次文档修改自动获批。
-- 本次提交仅保存需求、待审方案和项目记录，不代表方案批准或实现授权；尚未执行功能测试、构建、安装、合并或推送。
+<!-- gantry:step id=gty-jm-compat author=ai status=accept -->
+4. 通过现有 List<Content> 接口返回编号查询结果，保持 ContentParser、Content 和 JAR ABI 不变。宿主照常显示结果卡片，并沿用成人内容、标签屏蔽、点击详情、刷新和返回行为。本任务不增加导航事件或宿主状态机；更新插件即可提供编号查询能力。其他调用 JM getList 的入口（包括全局搜索中的 JM 子结果）也会收到编号查询结果，其他来源不变。
 
-## 需求变更历史
+用户于 2026-10-05 确认第 4 项：仅修改插件及对应测试，复用现有宿主行为，全局搜索中的 JM 子结果同步支持编号查询，其他来源和普通关键词搜索保持原行为。
 
-- 2026-10-05：最初确认的需求要求编号提交后自动进入详情；首次方案因此提出插件与宿主配套修改，方案未获批准。
-- 2026-10-05：用户明确取消跳转详情要求。当前目标改为插件返回精确结果卡片；撤回宿主跳转策略、一次性导航状态、宿主修改与隔离安排、宿主构建和对应测试计划。本文当前正文为修订方案，历史不构成执行要求。
+## 改动范围与薄适配约束
+
+- 生产代码集中在 `JmComicParser.kt` 的查询入口及局部响应转换；测试扩展 `src/test/kotlin/org/skepsun/kototoro/parsers/site/zh/JmComicTest.kt`，按需要增加同目录测试辅助文件和 `src/test/resources/fixtures/jm/` 最小夹具。
+- 用少量私有逻辑处理编号分流和详情响应形态，复用已有网络、身份和列表映射能力；不复制整段 getDetails 或章节解析，不建立单站点专用框架。
+- 保持普通查询、推荐、分类、每周及收藏的既有语义。特别注意 parseComic 被多入口复用，局部适配不能无意改变其所有调用方。
+- 宿主、ContentParser/Content 公共契约、共享分页器、网络基础设施、依赖与发布工作流不在改动范围。出现必须修改这些部分的证据时，先说明具体缺口和新增范围。
+- 同步上游时重点复查查询入口、结果映射及其回归测试；上游已有等效能力时再评估移除个人补丁。薄适配以职责集中和兼容证据判断，不以文件数或行数判断。
+
+## 实现建议（可自主调整）
+
+1. getListPage 先识别 query；编号且非第一页时尽早返回空列表，第一页调用局部编号查询逻辑。非编号保留原 filter/query 进入旧分流。优先沿用 searchPaginator.firstPage，避免复制分页状态。
+2. 可将“输入识别、请求、响应转换”拆成私有函数，或按实际代码合并。请求调用 apiGet；结果映射优先局部规范化详情 JSON 后复用 parseComic，再补齐必要字段。无需固定三个函数、精确签名或新建文件。
+3. 对照 parseComic/getDetails 处理返回 ID、原始标题、作者数组、描述及标签；参考既有首作者语义，避免数组或 JSON null 被当作展示字符串。UID 使用 generateUid，URL 使用当前 baseUrl/imageHost，chapters 可保留未加载状态，点击后走原 getDetails。
+4. 新增解析错误优先复用现有 ParseException，带 JM、输入编号、字段或请求 URL 上下文；网络与鉴权异常保留既有类型及处理路径，不用 catch-all 转为空结果。JSON null 可复用 util/json/JsonExt.kt 的 getStringOrNull。错误类的局部选用可调整，但不能改变已确认的失败语义或破坏宿主识别。
+5. 离线测试优先使用独立 ContentLoaderContext 和 OkHttp 拦截器提供合成响应；拦截域名初始化、setting 及业务请求，禁止实际联网和读取本机凭据。响应构造参考 apiHeaders 的 tokenparam、convertData 的协议及 SourceConfigMock；测试辅助类、调度方式与夹具文件名由实现者选择。
+
+上述建议不是新增产品要求。若复用方式不适配，先在局部转换或测试层调整并验证；不得以“建议可调整”为由改变已确认语义、扩大范围或跳过失败用例。
+
+## 待验证假设与处理边界
+
+| 假设 / 未验证项 | 何时及如何取得证据 | 失败后如何处理 |
+| --- | --- | --- |
+| 局部详情响应转换可复用 parseComic，并保持标题、作者、标签和身份正确 | 实现初期用最小响应夹具经过公开 getList 检查映射 | 可调整私有转换和字段传递；若必须影响普通列表或共享模型，暂停对应范围 |
+| 独立上下文可覆盖域名初始化、动态 token 加密响应及协程重试 | 先跑一个现有普通搜索成功例，再跑编号查询的 RED 用例 | 先修测试接线；环境/加密错误不能当成功能缺失证据，不为测试放宽生产接口 |
+| 当前线上 /album 响应与既有解析代码及合成夹具一致 | 合成测试只证明约定；交付时以允许的在线验证或用户实际编号验收 | 调整局部解析后补回归；涉及已确认行为变化才重审，不凭空回填输入 ID |
+| 本机可制作且宿主可加载本次 dex 插件包 | 打包阶段检查既有 SDK/D8；交付后检查真实加载 | 缺少条件时报告未完成，不把 JVM 编译通过当设备加载通过，也不修改宿主或部署流程 |
+
+已核实的是现有 /album 调用路径、List<Content> 接口和分页契约；上述局部实现或环境检查允许延后，不是已经通过的实验。没有已知的方案可行性阻塞；实施中出现相反证据，应保留现场并按影响范围处理。
+
+## 必需验证与通过条件
+
+| 场景 | 关键断言 |
+| --- | --- |
+| 编号与非编号分流 | 首尾空白处理符合规则；正整数走 /album，前导零、JM 前缀和关键词走原路径；标签/排序不覆盖编号，filter 未改写 |
+| 输入与返回编号不同 | 如输入 123456、返回 654321，得到一张卡片；UID、封面和详情链接均对应 654321；没有 /search 回退 |
+| 字段及身份兼容 | 标题原文保留，作者不显示 JSON 数组文本，返回 ID 缺失不使用输入补齐；同一作品在原列表与编号路径的 UID 一致，域名变化不改变 UID |
+| 公开分页和后续详情 | 同一 parser 经 getList offset 0 返回一条，offset 1 返回空且不重复业务查询；切换查询从 offset 0 正常工作；结果交给 getDetails 后请求实际返回编号 |
+| 失败与恢复 | 无有效作品、缺必要字段或非法响应可观察地报错；网络、鉴权继续原处理；返回不同编号是成功例，失败不伪造卡片或改成关键词搜索 |
+| 原有行为 | 普通关键词及标签组合、受影响的原列表映射、已有每周排序测试保持原结果；未改的路径按实际影响决定回归深度 |
+
+核心测试通过公开 getList/getDetails，不能只测正则或私有 helper。全部默认测试离线、隔离且可重复；区分初始化与业务请求次数。具体测试数量和夹具接线可调整，表内行为覆盖不能删除。
+
+## 实施与交付顺序
+
+1. 核对源码、已确认文档和实现授权；先验证最小测试接线，再使代表性的编号行为测试因缺少功能而失败，随后实现局部补丁并通过适用回归。
+2. 执行 `./gradlew.bat test --tests "org.skepsun.kototoro.parsers.site.zh.JmComicTest" --no-daemon` 及 `./gradlew.bat compileKotlin jar --no-daemon`。运行 Gradle 优先使用 CI 的 JDK 21，保留 JVM toolchain 8。只因新变更或未解决风险扩大验证。
+3. 审查实际 diff 的职责边界和受影响调用方；记录有意义的实现调整及证据，不逐项记录命名和语法变化。按 Git 策略阶段提交，既有文档修改保留，不夹带宿主或规则修改。
+4. 按现有 release 工作流制作 dex plugin.jar，构建产物放项目 build 等既有 D 盘目录，不为验证推送主线或触发部署。分别报告离线测试/编译、实际插件加载、用户验收。
+5. 用户在现有宿主载入新插件后验证有效/无效编号、返回编号不同的作品、点击详情、关键词和全局 JM 结果；确认作品未被现有屏蔽规则隐藏。界面操作由用户完成，需要 ADB 时沿用既有连接及失败停止规则。未验收不合并。
+
+## 确认历史与当前状态
+
+- 2026-10-05：用户原先要求自动进入详情，后明确取消；当前仅返回卡片，宿主改动撤回。
+- 2026-10-05：用户逐项确认上文第 1–4 项及第 2.1 项；原“返回编号必须等于输入”已被“返回有效作品并使用实际返回编号”取代，原确认不再适用。
+- 2026-10-05：曾新增未获批准的第 5 项及 A–J 详细蓝图；用户随后确认新版 dev-workflow，并要求重写方案。该未决整包提案撤回，局部写法改列为建议，不增加行为或接口决定，不重开已有确认。
+- 当前已核对约束、建议、假设及验证要求的一致性；没有新增必须用户选择的设计项。原行为审阅和稳定性结论继续有效，实现门槛仍为 pending。本轮只处理方案文档，不实现功能。
+- 源码自调查基线未变化，因此复用已有路径核查；测试接线、功能测试、构建、加载及用户验收均尚未执行。新会话先读取本文件当前版本，不沿用已撤回的固定函数数目和测试蓝图。
 
 ## Code
 
