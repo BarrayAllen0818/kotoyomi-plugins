@@ -116,7 +116,7 @@
 
 ## Code
 
-实现已完成，源码快照将在实施提交后绑定提交记录。固定提醒 Issue 为 https://github.com/BarrayAllen0818/kotoyomi-plugins/issues/1 。
+实现提交为 9941a37268f1d874d3711eb113f7dc92418ae941，完整源码快照见下节。固定提醒 Issue 为 https://github.com/BarrayAllen0818/kotoyomi-plugins/issues/1 。
 
 ## 实施验证与审查
 
@@ -127,3 +127,813 @@
 真实只读隔离 Git 获取通过：个人远端 master=260a9c36c437506309c867faf4eab009cec6d24b，上游=ca313756e395b5ddbd201e01cc01ece01078d15c，pending_count=0，B 被两端包含，引用复核一致。Issue #1 已创建；--status 能读 Issue 并正确报告未部署工作流 API 404。
 
 实现未更改既有解析器、发布逻辑或 AGENTS，未构建插件。当前仍待用户审阅验收，未合并默认分支、未启用 Actions、未执行真实 runner，真实更新评论及通知送达尚无证据。验收后依第 6 步上线，并将 Issue 正文中的部署准备状态改为实际状态；不把本地测试标记为远端定时已生效。
+
+## Code snapshot (2026-10-06 @ 9941a37268f1d874d3711eb113f7dc92418ae941)
+
+### .github/scripts/check_upstream.py
+
+```python
+"""Remind about upstream commits missing from the published source history.
+
+Default CLI is read-only. Only the dedicated Actions workflow can post reminders.
+"""
+
+import argparse
+from datetime import datetime, timedelta, timezone
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+import urllib.error
+import urllib.request
+
+TARGET = "BarrayAllen0818/kotoyomi-plugins"
+SOURCE = "skepsun/kototoro-parsers"
+BRANCH = "master"
+INITIAL_BASE = "ca313756e395b5ddbd201e01cc01ece01078d15c"
+ISSUE_NUMBER = 1
+WORKFLOW = "check-upstream.yml"
+SHANGHAI = timezone(timedelta(hours=8))
+RESULT_PREFIX = "UPSTREAM_CHECK_RESULT "
+MARKER = "<!-- upstream-reminder-v1 "
+SHA = re.compile(r"[0-9a-f]{40}")
+
+
+class CheckError(RuntimeError):
+    pass
+
+
+def command(args, *, cwd=None, input=None, timeout=120, allowed=(0,), env=None):
+    try:
+        result = subprocess.run(args, cwd=cwd, input=input, text=True, encoding="utf-8",
+                                errors="replace", capture_output=True, timeout=timeout, env=env)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise CheckError(f"{args[0]} unavailable or timed out") from exc
+    if result.returncode not in allowed:
+        # Never include raw stderr: it may contain remote credentials or untrusted text.
+        raise CheckError(f"{args[0]} failed (exit {result.returncode})")
+    return result
+
+
+def valid_sha(value):
+    if not isinstance(value, str) or not SHA.fullmatch(value):
+        raise CheckError("Invalid Git SHA")
+    return value
+
+
+class GitSnapshot:
+    def __init__(self, target_url=f"https://github.com/{TARGET}.git",
+                 source_url=f"https://github.com/{SOURCE}.git", initial_base=INITIAL_BASE,
+                 *, target_branch=BRANCH, source_branch=BRANCH, temp_root=None):
+        self.urls = (target_url, source_url)
+        self.branches = (target_branch, source_branch)
+        self.initial_base = valid_sha(initial_base)
+        self.temp_root = temp_root
+        self.tmp = None
+
+    def __enter__(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="upstream-check-", dir=self.temp_root)
+        self.path = Path(self.tmp.name)
+        try:
+            self.git("init", "--bare", ".")
+        except BaseException:
+            self.tmp.cleanup()
+            raise
+        return self
+
+    def __exit__(self, *args):
+        self.tmp.cleanup()
+
+    def git(self, *args, allowed=(0,)):
+        env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+        return command(["git", *args], cwd=self.path, allowed=allowed, env=env)
+
+    def ancestor(self, base, tip):
+        return self.git("merge-base", "--is-ancestor", base, tip, allowed=(0, 1)).returncode == 0
+
+    def refresh(self):
+        for role, url, branch in zip(("target", "source"), self.urls, self.branches):
+            self.git("fetch", "--no-tags", url, f"+refs/heads/{branch}:refs/check/{role}")
+        origin = valid_sha(self.git("rev-parse", "refs/check/target").stdout.strip())
+        upstream = valid_sha(self.git("rev-parse", "refs/check/source").stdout.strip())
+        if self.git("rev-parse", "--is-shallow-repository").stdout.strip() != "false":
+            raise CheckError("Incomplete shallow Git history")
+        self.git("fsck", "--connectivity-only", "--no-dangling", origin, upstream)
+        self.git("merge-base", origin, upstream)  # Exit 1 means unrelated histories.
+        count = int(self.git("rev-list", "--count", upstream, "--not", origin).stdout.strip())
+        commits = []
+        lines = self.git("log", "--max-count=20", "--format=%H%x09%s", upstream, "--not", origin).stdout
+        for line in lines.splitlines():
+            sha, title = line.split("\t", 1)
+            commits.append({"sha": valid_sha(sha), "title": title})
+        base_exists = self.git("cat-file", "-e", f"{self.initial_base}^{{commit}}",
+                               allowed=(0, 1, 128)).returncode == 0
+        baseline_contained = base_exists and all(self.ancestor(self.initial_base, tip)
+                                                for tip in (origin, upstream))
+        return {"schema": 1, "status": "pending" if count else "synced",
+                "origin_sha": origin, "upstream_sha": upstream, "pending_count": count,
+                "commits": commits, "baseline_contained": baseline_contained}
+
+    def matches(self, result):
+        for url, branch, expected in zip(self.urls, self.branches,
+                                         (result["origin_sha"], result["upstream_sha"])):
+            lines = self.git("ls-remote", "--exit-code", url, f"refs/heads/{branch}").stdout.splitlines()
+            if len(lines) != 1 or valid_sha(lines[0].split()[0]) != expected:
+                return False
+        return True
+
+
+def now_utc():
+    return datetime.now(timezone.utc)
+
+
+def issue_url():
+    return f"https://github.com/{TARGET}/issues/{ISSUE_NUMBER}"
+
+
+def parse_time(value):
+    try:
+        result = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if result.tzinfo is None:
+            raise ValueError("timezone missing")
+        return result
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise CheckError("Invalid timestamp") from exc
+
+
+def reminder_for_day(comments, day):
+    found = None
+    for comment in comments:
+        if comment.get("user", {}).get("login") != "github-actions[bot]":
+            continue
+        body = comment.get("body") or ""
+        if MARKER not in body:
+            continue
+        matches = re.findall(re.escape(MARKER) + r"(.*?) -->", body, re.DOTALL)
+        try:
+            if len(matches) != 1:
+                raise ValueError("ambiguous marker")
+            record = json.loads(matches[0])
+            if (record["schema"] != 1 or record["source"] != SOURCE or record["target"] != TARGET
+                    or record["branch"] != BRANCH or type(record["pending_count"]) is not int
+                    or record["pending_count"] < 1):
+                raise ValueError("unexpected record")
+            valid_sha(record["origin_sha"])
+            valid_sha(record["upstream_sha"])
+            expected_day = parse_time(record["checked_at"]).astimezone(SHANGHAI).date().isoformat()
+            if record["day"] != expected_day:
+                raise ValueError("date mismatch")
+            if not re.fullmatch(r"https://github\.com/" + re.escape(TARGET) + r"/actions/runs/[0-9]+",
+                                record["run_url"]):
+                raise ValueError("invalid run URL")
+            if record["day"] == day:
+                found = comment
+        except (KeyError, TypeError, ValueError, CheckError) as exc:
+            raise CheckError("Malformed upstream reminder from Actions bot") from exc
+    return found
+
+
+def safe_title(title):
+    value = " ".join(title.split())[:200].replace("@", "＠")
+    return re.sub(r"([\\\`*_{}\[\]<>#!|])", r"\\\1", value)
+
+
+def reminder_body(result, run_url):
+    record = {key: result[key] for key in
+              ("schema", "day", "origin_sha", "upstream_sha", "pending_count", "checked_at")}
+    record.update(source=SOURCE, target=TARGET, branch=BRANCH, run_url=run_url)
+    lines = [f"仍有 **{result['pending_count']}** 个上游提交尚未合并并推送到远端 master。",
+             "", f"检查时间：{result['checked_at']}（北京时间 {result['day']}）",
+             f"- 个人远端：[master @ {result['origin_sha'][:8]}](https://github.com/{TARGET}/commit/{result['origin_sha']})",
+             f"- 上游：[master @ {result['upstream_sha'][:8]}](https://github.com/{SOURCE}/commit/{result['upstream_sha']})",
+             f"- [检查记录]({run_url})", "", "尚未合入的提交：", ""]
+    for commit in result["commits"]:
+        lines.append(f"- [{commit['sha'][:8]}](https://github.com/{SOURCE}/commit/{commit['sha']}) "
+                     + safe_title(commit["title"]))
+    if result["pending_count"] > len(result["commits"]):
+        lines.append(f"仅展示前 {len(result['commits'])} 条，共 {result['pending_count']} 条。")
+    if not result["baseline_contained"]:
+        lines.extend(["", "初始已同步基线不再被两端完整包含，请留意历史回退或改写。"])
+    lines.extend(["", "合并并推送到个人远端 master 后，下一次成功检查停止提醒。", "",
+                  MARKER + json.dumps(record, ensure_ascii=True, sort_keys=True) + " -->"])
+    return "\n".join(lines)
+
+
+def check(api, snapshot, clock=now_utc, run_url=""):
+    issue = api.issue()
+    if issue.get("pull_request") is not None or issue.get("locked"):
+        raise CheckError("Reminder Issue is unavailable, locked or a pull request")
+    comments = api.list_comments()
+    for attempt in range(2):
+        result = snapshot.refresh()
+        if snapshot.matches(result):
+            break
+    else:
+        raise CheckError("snapshot_changed: remote branches kept moving")
+    # Take the date after network/Git work, so a midnight crossing uses the new day.
+    checked = clock().astimezone(SHANGHAI)
+    result.update(checked_at=checked.isoformat(), day=checked.date().isoformat(),
+                  issue_url=issue["html_url"], notification="none", run_url=run_url)
+    prior = reminder_for_day(comments, result["day"])
+    if result["status"] == "synced":
+        return result
+    if prior:
+        result.update(notification="daily_reminder_exists", comment_url=prior["html_url"])
+        return result
+    body = reminder_body(result, run_url)
+    try:
+        saved = api.post_comment(body)
+        result.update(notification="posted", comment_url=saved["html_url"])
+    except (CheckError, KeyError, TypeError) as exc:
+        saved = reminder_for_day(api.list_comments(), result["day"])
+        if not saved:
+            raise CheckError("Reminder POST failed or is uncertain; no blind retry") from exc
+        result.update(notification="recovered", comment_url=saved["html_url"])
+    return result
+
+
+def get_token():
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if not token:
+        token = command(["gh", "auth", "token", "--hostname", "github.com"]).stdout.strip()
+    if not token:
+        raise CheckError("GitHub authentication is required")
+    return token
+
+
+class GitHub:
+    def __init__(self, token, issue_number=ISSUE_NUMBER):
+        self.token = token
+        self.issue_number = issue_number
+
+    def request(self, path, method="GET", body=None):
+        if not path.startswith(f"/repos/{TARGET}/"):
+            raise CheckError("Unexpected API target")
+        headers = {"Authorization": "Bearer " + self.token, "Accept": "application/vnd.github+json",
+                   "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "kotoyomi-upstream-check"}
+        data = None if body is None else json.dumps(body).encode("utf-8")
+        if data is not None:
+            headers["Content-Type"] = "application/json"
+        request = urllib.request.Request("https://api.github.com" + path, data=data,
+                                         headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as exc:
+            raise CheckError(f"GitHub API HTTP {exc.code} ({method})") from exc
+        except (OSError, ValueError) as exc:
+            raise CheckError(f"GitHub API response unavailable or invalid ({method})") from exc
+
+    def issue(self):
+        if self.issue_number < 1:
+            raise CheckError("Reminder Issue has not been initialized")
+        result = self.request(f"/repos/{TARGET}/issues/{self.issue_number}")
+        expected = f"https://github.com/{TARGET}/issues/{self.issue_number}"
+        if (not isinstance(result, dict) or result.get("number") != self.issue_number
+                or result.get("html_url") != expected):
+            raise CheckError("Unexpected reminder Issue")
+        return result
+
+    def list_comments(self):
+        comments = []
+        page = 1
+        while True:
+            batch = self.request(f"/repos/{TARGET}/issues/{self.issue_number}/comments?per_page=100&page={page}")
+            if not isinstance(batch, list) or not all(isinstance(item, dict) for item in batch):
+                raise CheckError("Invalid Issue comments page")
+            comments.extend(batch)
+            if len(batch) < 100:
+                return comments
+            page += 1
+
+    def post_comment(self, body):
+        return self.request(f"/repos/{TARGET}/issues/{self.issue_number}/comments",
+                            "POST", {"body": body})
+
+    def runs(self, conclusion=None):
+        path = f"/repos/{TARGET}/actions/workflows/{WORKFLOW}/runs?branch={BRANCH}&per_page=1"
+        if conclusion:
+            path += "&status=" + conclusion
+        result = self.request(path)
+        if not isinstance(result, dict) or not isinstance(result.get("workflow_runs"), list):
+            raise CheckError("Invalid workflow runs response")
+        return result["workflow_runs"]
+
+    def run_logs(self, run_id):
+        if type(run_id) is not int or run_id < 1:
+            raise CheckError("Invalid run id")
+        return command(["gh", "run", "view", str(run_id), "--repo", TARGET, "--log"],
+                       env=dict(os.environ, GH_TOKEN=self.token, GH_HOST="github.com")).stdout
+
+
+def result_from_logs(logs, run_url):
+    results = []
+    for line in logs.splitlines():
+        if RESULT_PREFIX not in line:
+            continue
+        raw = line.split(RESULT_PREFIX, 1)[1]
+        try:
+            record = json.loads(raw)
+            count = record["pending_count"]
+            if (record["schema"] != 1 or record["run_url"] != run_url
+                    or record["source"] != SOURCE or record["target"] != TARGET
+                    or type(count) is not int or count < 0
+                    or record["status"] != ("synced" if count == 0 else "pending")):
+                raise ValueError("mismatched result")
+            valid_sha(record["origin_sha"])
+            valid_sha(record["upstream_sha"])
+            parse_time(record["checked_at"])
+            results.append(record)
+        except (ValueError, KeyError, TypeError, CheckError) as exc:
+            raise CheckError("Invalid structured check result in logs") from exc
+    if len(results) != 1:
+        raise CheckError("Expected exactly one structured check result in logs")
+    return results[0]
+
+
+def status_report(api, clock=now_utc):
+    issue = api.issue()
+    report = {"mode": "read-only", "issue_url": issue["html_url"],
+              "scope": "Result as of the last check, not a live comparison",
+              "latest_run": None, "last_successful_check": None, "stale": None}
+    try:
+        runs = api.runs()
+    except CheckError as exc:
+        report["detail_error"] = "Workflow unavailable: " + str(exc)
+        return report
+    if not runs:
+        report["detail_error"] = "Workflow has never run"
+        return report
+    latest = runs[0]
+    report["latest_run"] = {key: latest.get(key) for key in
+                            ("id", "status", "conclusion", "html_url", "created_at", "updated_at")}
+    try:
+        successes = [latest] if latest.get("conclusion") == "success" else api.runs("success")
+        if not successes:
+            report["detail_error"] = "No successful check"
+            return report
+        success = successes[0]
+        report["last_successful_run"] = {key: success.get(key) for key in
+                                       ("id", "html_url", "created_at", "updated_at")}
+        result = result_from_logs(api.run_logs(success["id"]), success["html_url"])
+        report["last_successful_check"] = result
+        age = clock() - parse_time(result["checked_at"])
+        report["stale"] = age > timedelta(hours=30)
+        if age < timedelta(minutes=-5):
+            raise CheckError("Check timestamp is unexpectedly in the future")
+    except (CheckError, KeyError, TypeError) as exc:
+        report["last_successful_check"] = None
+        report["stale"] = None
+        report["detail_error"] = "Check log details unavailable: " + str(exc)
+    return report
+
+
+def emit_result(result):
+    print(RESULT_PREFIX + json.dumps(result, ensure_ascii=True, sort_keys=True))
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a", encoding="utf-8") as stream:
+            stream.write("## 上游提交检查\n\n")
+            stream.write("```json\n" + json.dumps(result, ensure_ascii=True, indent=2) + "\n```\n")
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--status", action="store_true", help="Read the last remote check (default)")
+    modes.add_argument("--notify", action="store_true", help="Dedicated Actions workflow only")
+    args = parser.parse_args(argv)
+    try:
+        if not args.notify:
+            print(json.dumps(status_report(GitHub(get_token())), ensure_ascii=True, indent=2))
+            return 0
+        expected_ref = f"{TARGET}/.github/workflows/{WORKFLOW}@refs/heads/{BRANCH}"
+        if (os.environ.get("GITHUB_ACTIONS") != "true"
+                or os.environ.get("GITHUB_REPOSITORY") != TARGET
+                or os.environ.get("GITHUB_EVENT_NAME") not in ("schedule", "workflow_dispatch")
+                or os.environ.get("GITHUB_WORKFLOW_REF") != expected_ref):
+            raise CheckError("Notification writes require the dedicated default-branch Actions workflow")
+        run_id = os.environ.get("GITHUB_RUN_ID", "")
+        if not run_id.isdigit():
+            raise CheckError("Invalid Actions run id")
+        api = GitHub(get_token())
+        run_url = f"https://github.com/{TARGET}/actions/runs/{run_id}"
+        with GitSnapshot(temp_root=os.environ.get("RUNNER_TEMP")) as snapshot:
+            result = check(api, snapshot, run_url=run_url)
+        result.update(source=SOURCE, target=TARGET)
+        emit_result(result)
+        return 0
+    except (CheckError, OSError, ValueError, KeyError, TypeError) as exc:
+        result = {"schema": 1, "status": "error", "checked_at": now_utc().isoformat(),
+                  "error": str(exc), "issue_url": issue_url()}
+        if args.notify:
+            emit_result(result)
+        else:
+            print(json.dumps(result, ensure_ascii=True))
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+### .github/scripts/test_check_upstream.py
+
+```python
+"""Offline notification contracts; temporary Git histories stay under build/."""
+
+import importlib.util
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
+
+sys.dont_write_bytecode = True
+SCRIPT = Path(__file__).with_name("check_upstream.py")
+ROOT = Path(__file__).resolve().parents[2]
+TMP = ROOT / "build" / "upstream-tests"
+TMP.mkdir(parents=True, exist_ok=True)
+if SCRIPT.exists():
+    spec = importlib.util.spec_from_file_location("check_upstream", SCRIPT)
+    monitor = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = monitor
+    spec.loader.exec_module(monitor)
+else:
+    monitor = None
+
+
+class GitHistoryTest(unittest.TestCase):
+    def setUp(self):
+        self.assertIsNotNone(monitor, "upstream monitor has not been implemented")
+        self.tmp = tempfile.TemporaryDirectory(dir=TMP)
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name)
+        self.remote = self.path / "remote.git"
+        self.git("init", "--bare", str(self.remote))
+        self.tree = self.git("--git-dir", str(self.remote), "mktree", input="").strip()
+        self.base = self.commit("base")
+        self.up = self.commit("upstream one", self.base)
+        self.personal = self.commit("personal", self.base)
+        self.set_ref("master", self.personal)
+        self.set_ref("upstream", self.up)
+
+    def git(self, *args, input=None):
+        env = dict(os.environ, GIT_AUTHOR_NAME="Test", GIT_AUTHOR_EMAIL="test@example.invalid",
+                   GIT_COMMITTER_NAME="Test", GIT_COMMITTER_EMAIL="test@example.invalid")
+        return subprocess.run(["git", *args], input=input, text=True, encoding="utf-8",
+                              capture_output=True, check=True, env=env).stdout
+
+    def commit(self, message, *parents):
+        args = ["--git-dir", str(self.remote), "commit-tree", self.tree]
+        for parent in parents:
+            args += ["-p", parent]
+        return self.git(*args, input=message).strip()
+
+    def set_ref(self, branch, sha):
+        self.git("--git-dir", str(self.remote), "update-ref", f"refs/heads/{branch}", sha)
+
+    def snapshot(self):
+        return monitor.GitSnapshot(str(self.remote), str(self.remote), self.base,
+                                   target_branch="master", source_branch="upstream", temp_root=self.path)
+
+    def test_only_remote_master_ancestry_counts(self):
+        self.set_ref("local-merged-but-not-pushed", self.commit("merge", self.personal, self.up))
+        with self.snapshot() as snapshot:
+            result = snapshot.refresh()
+            self.assertEqual(result["pending_count"], 1)
+            self.assertEqual(result["commits"][0]["sha"], self.up)
+            self.set_ref("master", self.commit("merged and pushed", self.personal, self.up))
+            result = snapshot.refresh()
+            self.assertEqual(result["pending_count"], 0)
+            self.assertEqual(result["status"], "synced")
+
+    def test_partial_merge_and_remote_rollback(self):
+        second = self.commit("upstream two", self.up)
+        self.set_ref("upstream", second)
+        self.set_ref("master", self.commit("partial", self.personal, self.up))
+        with self.snapshot() as snapshot:
+            self.assertEqual(snapshot.refresh()["pending_count"], 1)
+            self.set_ref("master", self.personal)
+            self.assertEqual(snapshot.refresh()["pending_count"], 2)
+
+    def test_equal_trees_do_not_hide_missing_original_commit(self):
+        with self.snapshot() as snapshot:
+            self.assertEqual(snapshot.refresh()["pending_count"], 1)
+
+    def test_summary_limit_does_not_truncate_count(self):
+        tip = self.up
+        for i in range(24):
+            tip = self.commit(f"change {i}", tip)
+        self.set_ref("upstream", tip)
+        with self.snapshot() as snapshot:
+            result = snapshot.refresh()
+            self.assertEqual(result["pending_count"], 25)
+            self.assertEqual(len(result["commits"]), 20)
+
+    def test_history_rewrite_without_common_ancestor_fails(self):
+        self.set_ref("upstream", self.commit("unrelated"))
+        with self.snapshot() as snapshot:
+            with self.assertRaises(monitor.CheckError):
+                snapshot.refresh()
+
+    def test_remote_changed_and_fetch_failure_are_not_synced(self):
+        with self.snapshot() as snapshot:
+            result = snapshot.refresh()
+            self.set_ref("master", self.commit("later", self.personal))
+            self.assertFalse(snapshot.matches(result))
+            self.git("--git-dir", str(self.remote), "update-ref", "-d", "refs/heads/upstream")
+            with self.assertRaises(monitor.CheckError):
+                snapshot.refresh()
+
+
+class FakeAPI:
+    def __init__(self):
+        self.comments = []
+        self.posts = 0
+        self.lose_response = False
+        self.fail_post = False
+        self.locked = False
+
+    def issue(self):
+        return {"number": 1, "locked": self.locked, "html_url": "https://github.com/" + monitor.TARGET + "/issues/1"}
+
+    def list_comments(self):
+        return list(self.comments)
+
+    def post_comment(self, body):
+        self.posts += 1
+        if self.fail_post:
+            raise monitor.CheckError("HTTP unavailable")
+        comment = {"id": self.posts, "body": body, "user": {"login": "github-actions[bot]"},
+                   "html_url": "https://github.com/" + monitor.TARGET + f"/issues/1#issuecomment-{self.posts}"}
+        self.comments.append(comment)
+        if self.lose_response:
+            raise monitor.CheckError("response lost")
+        return comment
+
+
+class FakeSnapshot:
+    def __init__(self, counts=(1,), stable=(True,)):
+        self.counts = iter(counts)
+        self.stable = iter(stable)
+
+    def refresh(self):
+        count = next(self.counts)
+        return {"schema": 1, "status": "pending" if count else "synced",
+                "origin_sha": "a" * 40, "upstream_sha": "b" * 40, "pending_count": count,
+                "commits": [{"sha": "b" * 40, "title": "@someone **title**"}] if count else [],
+                "baseline_contained": True}
+
+    def matches(self, result):
+        return next(self.stable)
+
+
+class NotificationTest(unittest.TestCase):
+    def setUp(self):
+        self.assertTrue(callable(getattr(monitor, "check", None)), "notification engine is missing")
+        self.api = FakeAPI()
+        self.now = datetime(2026, 10, 6, 22, tzinfo=timezone.utc)
+        self.url = "https://github.com/" + monitor.TARGET + "/actions/runs/1"
+
+    def run_check(self, snapshot=None, when=None):
+        return monitor.check(self.api, snapshot or FakeSnapshot(), lambda: when or self.now, self.url)
+
+    def test_repeat_next_day_but_not_same_day(self):
+        self.assertEqual(self.run_check()["notification"], "posted")
+        self.assertEqual(self.run_check()["notification"], "daily_reminder_exists")
+        self.assertEqual(self.run_check(when=self.now + timedelta(days=1))["notification"], "posted")
+        self.assertEqual(self.api.posts, 2)
+
+    def test_new_commits_same_day_update_result_without_extra_reminder(self):
+        self.run_check()
+        result = self.run_check(FakeSnapshot((2,)))
+        self.assertEqual(result["pending_count"], 2)
+        self.assertEqual(result["notification"], "daily_reminder_exists")
+        self.assertEqual(self.api.posts, 1)
+
+    def test_midnight_crossing_during_fetch_uses_new_date(self):
+        class CrossingSnapshot(FakeSnapshot):
+            def refresh(inner):
+                self.now = datetime(2026, 10, 6, 16, tzinfo=timezone.utc)
+                return super().refresh()
+        self.now = datetime(2026, 10, 6, 15, 59, tzinfo=timezone.utc)
+        result = self.run_check(CrossingSnapshot())
+        self.assertEqual(result["day"], "2026-10-07")
+
+    def test_recovery_read_failure_preserves_uncertainty_without_retry(self):
+        self.api.lose_response = True
+        original = self.api.list_comments
+        def comments():
+            if self.api.posts:
+                raise monitor.CheckError("read failed")
+            return original()
+        self.api.list_comments = comments
+        with self.assertRaises(monitor.CheckError):
+            self.run_check()
+        self.assertEqual(self.api.posts, 1)
+
+    def test_synced_does_not_post_even_with_old_reminder(self):
+        self.run_check()
+        result = self.run_check(FakeSnapshot((0,)))
+        self.assertEqual(result["status"], "synced")
+        self.assertEqual(self.api.posts, 1)
+
+    def test_lost_post_response_is_recovered(self):
+        self.api.lose_response = True
+        result = self.run_check()
+        self.assertEqual(result["notification"], "recovered")
+        self.assertEqual(self.api.posts, 1)
+        self.run_check()
+        self.assertEqual(self.api.posts, 1)
+
+    def test_failed_post_does_not_retry(self):
+        self.api.fail_post = True
+        with self.assertRaises(monitor.CheckError):
+            self.run_check()
+        self.assertEqual(self.api.posts, 1)
+
+    def test_locked_issue_is_failure(self):
+        self.api.locked = True
+        with self.assertRaises(monitor.CheckError):
+            self.run_check()
+        self.assertEqual(self.api.posts, 0)
+
+    def test_remote_merge_before_post_recalculates(self):
+        result = self.run_check(FakeSnapshot((1, 0), (False, True)))
+        self.assertEqual(result["status"], "synced")
+        self.assertEqual(self.api.posts, 0)
+
+    def test_continuously_changing_snapshot_fails(self):
+        with self.assertRaises(monitor.CheckError):
+            self.run_check(FakeSnapshot((1, 1), (False, False)))
+        self.assertEqual(self.api.posts, 0)
+
+    def test_user_marker_does_not_suppress_notification(self):
+        self.run_check()
+        self.api.comments[0]["user"]["login"] = "ordinary-user"
+        self.run_check()
+        self.assertEqual(self.api.posts, 2)
+
+    def test_malformed_bot_record_fails(self):
+        self.api.comments = [{"user": {"login": "github-actions[bot]"}, "body": monitor.MARKER + "{} -->"}]
+        with self.assertRaises(monitor.CheckError):
+            self.run_check()
+
+    def test_local_date_and_midnight(self):
+        self.run_check(when=datetime(2026, 10, 6, 15, 59, tzinfo=timezone.utc))
+        self.run_check(when=datetime(2026, 10, 6, 16, 0, tzinfo=timezone.utc))
+        self.assertEqual(self.api.posts, 2)
+        self.assertIn("2026-10-07", self.api.comments[-1]["body"])
+
+    def test_commit_title_cannot_mention_user(self):
+        self.run_check()
+        self.assertNotIn("@someone", self.api.comments[0]["body"])
+
+
+class APIAndStatusTest(unittest.TestCase):
+    def setUp(self):
+        self.assertTrue(hasattr(monitor, "GitHub"), "GitHub adapter is missing")
+        self.now = datetime(2026, 10, 7, 6, tzinfo=monitor.SHANGHAI)
+
+    def test_comments_paginate(self):
+        api = monitor.GitHub("fake", issue_number=1)
+        calls = []
+        def request(path, method="GET", body=None):
+            calls.append(path)
+            return [{}] * 100 if path.endswith("&page=1") else [{"id": 101}]
+        api.request = request
+        self.assertEqual(len(api.list_comments()), 101)
+        self.assertEqual(len(calls), 2)
+
+    def test_transport_error_is_not_empty_success(self):
+        api = monitor.GitHub("fake", issue_number=1)
+        with patch.object(monitor.urllib.request, "urlopen", side_effect=OSError("token=secret")):
+            with self.assertRaises(monitor.CheckError) as caught:
+                api.issue()
+        self.assertNotIn("secret", str(caught.exception))
+
+    def test_status_stale_and_latest_failed_stay_distinct(self):
+        api = self.fake_status_api("failure", self.now - timedelta(hours=40))
+        result = monitor.status_report(api, clock=lambda: self.now)
+        self.assertEqual(result["latest_run"]["conclusion"], "failure")
+        self.assertTrue(result["stale"])
+        self.assertEqual(result["last_successful_check"]["pending_count"], 0)
+        self.assertEqual(api.posts, 0)
+
+    def test_old_issue_does_not_override_synced_log(self):
+        api = self.fake_status_api("success", self.now)
+        result = monitor.status_report(api, clock=lambda: self.now)
+        self.assertEqual(result["last_successful_check"]["status"], "synced")
+        self.assertFalse(result["stale"])
+        self.assertEqual(api.posts, 0)
+
+    def test_missing_logs_are_unknown(self):
+        api = self.fake_status_api("success", self.now)
+        api.run_logs = lambda run: (_ for _ in ()).throw(monitor.CheckError("expired"))
+        result = monitor.status_report(api, clock=lambda: self.now)
+        self.assertIsNone(result["last_successful_check"])
+        self.assertIn("log", result["detail_error"])
+
+    def test_error_or_duplicate_log_records_cannot_be_a_success(self):
+        api = self.fake_status_api("success", self.now)
+        text = api.run_logs(1)
+        for bad_logs in (text + "\n" + text,
+                         monitor.RESULT_PREFIX + json.dumps({"schema": 1, "status": "error"})):
+            with self.subTest(logs=bad_logs):
+                api.run_logs = lambda run: bad_logs
+                self.assertIsNone(monitor.status_report(api, clock=lambda: self.now)["last_successful_check"])
+
+    def test_future_check_timestamp_is_unknown(self):
+        api = self.fake_status_api("success", self.now + timedelta(hours=2))
+        self.assertIsNone(monitor.status_report(api, clock=lambda: self.now)["last_successful_check"])
+
+    def test_no_workflow_runs_is_not_synced(self):
+        api = self.fake_status_api("success", self.now)
+        api.runs = lambda conclusion=None: []
+        result = monitor.status_report(api, clock=lambda: self.now)
+        self.assertIsNone(result["latest_run"])
+        self.assertIsNone(result["last_successful_check"])
+
+    def test_log_from_other_run_rejected(self):
+        api = self.fake_status_api("success", self.now)
+        text = api.run_logs(1).replace("/runs/1", "/runs/999")
+        api.run_logs = lambda run: text
+        result = monitor.status_report(api, clock=lambda: self.now)
+        self.assertIsNone(result["last_successful_check"])
+
+    def fake_status_api(self, conclusion, checked):
+        api = FakeAPI()
+        run = {"id": 1, "status": "completed", "conclusion": conclusion,
+               "html_url": "https://github.com/" + monitor.TARGET + "/actions/runs/1",
+               "created_at": self.now.isoformat(), "updated_at": self.now.isoformat()}
+        success = dict(run, conclusion="success")
+        api.runs = lambda conclusion=None: [success if conclusion else run]
+        result = {"schema": 1, "status": "synced", "origin_sha": "a" * 40,
+                  "upstream_sha": "b" * 40, "pending_count": 0, "checked_at": checked.isoformat(),
+                  "run_url": run["html_url"], "source": monitor.SOURCE, "target": monitor.TARGET}
+        api.run_logs = lambda run: "timestamp\t" + monitor.RESULT_PREFIX + json.dumps(result)
+        return api
+
+    def test_default_cli_never_enters_writer(self):
+        with patch.object(monitor, "GitHub") as cls, patch.object(monitor, "get_token", return_value="fake"), \
+                patch.object(monitor, "status_report", return_value={"state": "read-only"}) as status, \
+                patch.object(monitor, "check") as writer, patch("builtins.print"):
+            self.assertEqual(monitor.main([]), 0)
+            status.assert_called_once()
+            writer.assert_not_called()
+
+    def test_write_cli_rejects_local_execution(self):
+        with patch.dict(os.environ, {}, clear=True), patch.object(monitor, "get_token") as token, patch("builtins.print"):
+            self.assertEqual(monitor.main(["--notify"]), 1)
+            token.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
+```
+
+### .github/workflows/check-upstream.yml
+
+```yaml
+name: Check upstream commits
+
+on:
+  schedule:
+    # 22:00 UTC = 06:00 Asia/Shanghai on the following day.
+    - cron: '0 22 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: upstream-master-reminder
+  cancel-in-progress: false
+
+jobs:
+  check:
+    if: github.repository == 'BarrayAllen0818/kotoyomi-plugins' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - name: Verify reminder behavior offline
+        run: python3 -B .github/scripts/test_check_upstream.py
+      - name: Check published history and remind
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -B .github/scripts/check_upstream.py --notify
+```
