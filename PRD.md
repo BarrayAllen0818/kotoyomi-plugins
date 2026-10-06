@@ -34,7 +34,7 @@
 
 ## REQ-003：统一插件版本与验收发布流程
 
-状态：用户明确要求本任务不使用 dev-workflow，沿用已确认目标直接实施。发布工作流与共用脚本已完成：显式触发、按远端 code 递增、保留历史、同产物跳过及 HTTP 哈希核对。本地 9 个发布测试、actionlint、语法检查、Gradle classpath 与独立 D8 打包验证通过；待任务分支 CI 和用户审阅验收后合并。当前已验收插件仍为 1.0.137，未发布新插件。
+状态：用户明确要求本任务不使用 dev-workflow，沿用已确认目标直接实施。发布工作流与共用脚本已完成：显式触发、按远端 code 递增、保留历史、同产物跳过及 HTTP 哈希核对。本地 9 个发布测试、actionlint、语法检查、Gradle classpath 与独立 D8 打包验证通过；实现已提交推送；GitHub 仓库 Actions 当前为 enabled=false，远端 CI 未运行，保留为验证限制。待用户审阅验收后合并。当前已验收插件仍为 1.0.137，未发布新插件。
 
 ### 核心需求
 
@@ -91,3 +91,5 @@
 
 - 2026-10-06：用户明确回复“不需要用该skill”，本任务停用 dev-workflow 的分阶段确认，直接实施已确认发布目标，不影响 Git 策略及用户验收边界。新增 .github/scripts/publish_plugin.py、离线 Git/HTTP 测试、classpath 初始化脚本与发布说明；release.yml 改为显式触发并固定 JDK 21/D8 9.3.16（校验下载 SHA-256），新增不发布插件的 test-release.yml。默认脚本仅准备候选，--push 才推送；读取远端 code、保留其他索引字段/文件及历史，记录 release.json，同字节跳过，并核对实际下载。并发冲突普通推送拒绝并保留候选；HTTP 校验失败不掩盖已发布事实。
 - 2026-10-06：先验证版本计算测试有效失败，再完成实现；本地 9 个测试覆盖版本字段、溢出/损坏索引、历史保留、默认不推送、重复发布、竞争拒绝、错误产物/脏工作区，以及 HTTP 旧索引和错误下载。actionlint、YAML/Bash/Python 语法、git diff 检查通过；pluginDexClasspath 成功，固定 D8 对已有 JVM JAR 生成 build/release-validation/plugin.jar 成功且日志为空。未重跑无关解析器测试或重建 JVM JAR，未替换 build/libs 验收产物；1.0.137 SHA-256 仍为 b0d0292a25241724d465d6245faaa6a9b250828e9bf57a88c35e4c285c0a09cb。完整差异审查未发现未处理缺陷；未触发真实发布工作流，GitHub runner 的构建/远端发布全过程不宣称实测。
+
+- 2026-10-06：实现提交 d3c9e5a5956061ca969266636a52939e72e324b7 已推送 origin/ci/plugin-release-policy。使用新脚本对真实 origin 和已验收产物执行不带 --push 的检查，返回 unchanged、code 137、repo 提交 fe681da35393aec1e0b902cf891406bc03922bf8，未创建发布候选或更改远端。GitHub API 确认仓库 Actions enabled=false，未产生远端测试运行；本任务未启用 Actions 或触发真实发布。master 仍为 ec82f0e20510b6908be6d16d368a60c819c4ec83，新流程待审阅合并后成为默认规则。
