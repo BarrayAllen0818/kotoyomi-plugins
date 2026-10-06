@@ -1,0 +1,40 @@
+---
+baseline_commit: f9965c747a848c34b7cab1da39c69e17979254ca
+last_diff_commit: f9965c747a848c34b7cab1da39c69e17979254ca
+last_diff_check: 2026-10-06
+guidance: guided
+---
+
+# Diff log
+
+## Files in scope
+
+- PRD.md：REQ-002 及根因、需求内容、阶段确认记录。
+- .gantry/nhentai-api-v2.md：NH 网站改版兼容方案、证据与待审行为。
+- .gantry/nhentai-api-v2.diff.md：本任务差异记录。
+- src/main/kotlin/org/skepsun/kototoro/parsers/site/all/NhentaiParser.kt：后续实现拟涉及列表、详情和图片请求。
+- src/test/kotlin/org/skepsun/kototoro/parsers/site/all/NhentaiParserTest.kt、NhentaiParserIntegrationTest.kt：后续离线/显式线上验证。
+- src/test/resources/fixtures/nhentai/：后续最小脱敏夹具。
+
+## Triaged irrelevant
+
+- JM 已完成任务及原 Gantry 文档：保留，不修改。
+- 宿主 Kotoyomi：此前仅核对请求契约与报错位置，不列入实现范围。
+
+## Reconciliation history
+
+- 2026-10-06：用户在接续对话对当前稳定修订版实施范围回复“确认”，授予 REQ-002 实现、验证、打包及本地阶段提交授权；不含合并、推送、发布或设备验收。
+
+- 2026-10-06：用户确认根因；随后确认建立 fix/nhentai-api-v2 及写入 REQ-002，再确认需求阶段完成和进入方案阶段。尚无方案批准与实现授权。
+- 2026-10-06：进入本阶段时只有已授权 PRD 变更，生产源码和测试均与基线一致；现有 .gantry 仅含 JM 任务，创建独立 NH 方案，采用全局 guided 设置与聊天审阅方式。
+- 2026-10-06：核对 v2 OpenAPI、CDN 配置、JPG/WebP 作品数据和封面/首尾图片响应；发现旧语言排序 URL 丢失 page、标签排序路径 404，验证查询参数形式可用，纳入 REQ-002 兼容范围。
+- 2026-10-06：GitNexus 绑定本仓库当前基线；fetchGallery 影响查询未命中，使用 Serena 和当前源码确认两个直接调用方。未将图谱空结果作为无影响证明。
+- 2026-10-06：起草四项 AI 行为步骤及一个错误策略选项；保持 open 和 workflow pending。仅更新文档，未运行 Gradle、未修改解析器和测试、未发布。
+- 2026-10-06：用户回复“A”，确认新版 API 失败时传播真实错误、删除旧网页回退及不可达检测。将选择记为 choice-a，并在第 3.1 项及验证矩阵落实；保留 B 作为未选历史。局部后果核对无新增错误策略决定，其余四项保持 open，整体 workflow 与实现授权仍 pending；本轮只更新两份 Gantry 文档。
+- 2026-10-06：用户在“其余方案是否整体确认”请求后回复“确认”，批准列表、v2 映射、动态 CDN、身份/缓存及验证步骤。全部步骤标记 accept；检查基线与当前差异，生产源码和测试无变动。注解审查及稳定性复核覆盖属性工具、API 契约、两个调用方、身份、缓存及错误边界，未发现新增实质决定；pseudocode approved、annotations/stabilization complete，implementation 保持 pending。文档就绪后单独请求实现授权。
+- 2026-10-06：用户随后回复“换对话实现”，原方案实施接续授权保留为历史；之后要求优化 skill 并“根据最新skill优化方案”，当前任务切为方案修订，不开始生产实现。
+- 2026-10-06：按当前 dev-workflow 的 references/design-handoff.md 检查，发现原审查未充分规定域名快照与 Referer、CDN 锁与缓存提交、页面 UID 输入以及时钟验证。读取当前相关符号并核对源码仍与基线一致；补入第 3.2–3.4 项、实施顺序、可控测试与失败调整边界。原已确认步骤和错误策略 A 保留，新增机制 open，整体工作流回到待审；修正此前“全部边界已稳定”的表述，不覆盖历史决定。
+- 2026-10-06：用户要求先做交接审查；只读核对当前方案、响应解析及宿主页请求链，内存推演 A1/A2/A3/B1 排队，发现“新域最多等待一次请求”与单锁机制矛盾，以及同步解析后的取消发布检查缺失。明确报告交接暂不通过，未改文件或运行构建。
+- 2026-10-06：用户对两项审查结论回复“确认”，本轮将修正写入第 3.3 项及验证矩阵，保留简单单锁方案，明确发布前取消检查、资源关闭和提交边界。按稳定域名并发、切域排队、旧请求晚到、提交前后取消、失败释放路径重新复核，无新增交接阻塞；新增机制整体 open、workflow pending 保留，未启动实现。本轮仅修改两份 Gantry 文档。
+- 2026-10-06：修正后交付说明明确第 3.2–3.4 项整体待审，用户再次回复“确认”，批准该修订版三项机制。将三项标记 accept，核对正文、两项审查修正与验证矩阵一致，未新增行为或待决项；pseudocode approved、annotations/stabilization complete，implementation pending。更新 PRD 状态，本轮仅记录确认，未修改代码或执行构建。
+- 2026-10-06：按接续对话明确实施授权通过 lint --gate；获得旧源码的封面属性、旧 API 和旧排序路径失败回归后实现。当前 NH 离线 18/18、JM 37/37、线上两个作品用例通过；匿名首页 Cloudflare 页面 403 受阻，不吞异常或算通过。compileKotlin/jar 成功，完整差异审查未发现未处理缺陷。普通测试接线与内存参数修正保持既定约束，未重开设计审批。
