@@ -21,11 +21,20 @@ import org.skepsun.kototoro.parsers.model.ContentParserSource
 import org.skepsun.kototoro.parsers.model.ContentTag
 import org.skepsun.kototoro.parsers.model.ContentTagGroup
 import org.skepsun.kototoro.parsers.model.SortOrder
-import org.skepsun.kototoro.parsers.network.CloudFlareHelper
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import org.json.JSONException
+import org.skepsun.kototoro.parsers.exception.ParseException
+import org.skepsun.kototoro.parsers.util.src
 import org.skepsun.kototoro.parsers.network.UserAgents
 import org.skepsun.kototoro.parsers.util.generateUid
 import org.skepsun.kototoro.parsers.util.parseHtml
 import org.skepsun.kototoro.parsers.util.parseJson
+import org.skepsun.kototoro.parsers.util.parseJsonArray
 import org.skepsun.kototoro.parsers.util.urlEncoded
 import org.json.JSONObject
 import org.skepsun.kototoro.parsers.model.ContentType
@@ -803,31 +812,15 @@ internal class NhentaiParser(context: ContentLoaderContext) :
         .build()
 
     override fun intercept(chain: Interceptor.Chain): Response {
-        // 需要 Referer 才能加载图片 / API
-        val req = chain.request()
-        val url = req.url.toString()
-        return if (url.contains("nhentai.net")) {
-            val newReq = req.newBuilder()
-                .header("Referer", "https://$domain/")
-                .header("User-Agent", UserAgents.CHROME_DESKTOP)
-                .build()
-            chain.proceed(newReq)
-        } else {
-            chain.proceed(req)
-        }
-    }
-
-    /**
-     * nhentai 有 Cloudflare challenge（403 + cf-mitigated: challenge），
-     * 触发 requestBrowserAction 让 App 打开浏览器完成验证后可继续浏览。
-     */
-    private fun checkProtection(response: Response, url: String) {
-        if (CloudFlareHelper.checkResponseForProtection(response) != CloudFlareHelper.PROTECTION_NOT_DETECTED) {
-            context.requestBrowserAction(this, url)
-        }
+        val request = chain.request()
+        return chain.proceed(request.newBuilder()
+            .header("Referer", request.header("Referer") ?: "https://$domain/")
+            .header("User-Agent", UserAgents.CHROME_DESKTOP)
+            .build())
     }
 
     override suspend fun getListPage(page: Int, order: SortOrder, filter: ContentListFilter): List<Content> {
+        val operation = requestContext()
 		val query = filter.query.orEmpty()
 		val langTag = filter.tags.firstOrNull { it.key.startsWith("language:") }
 		val tagFilter = filter.tags.firstOrNull { it.key.startsWith("tag:") }
@@ -842,23 +835,58 @@ internal class NhentaiParser(context: ContentLoaderContext) :
 		val searchSortParam = if (sortParam != null) "&sort=$sortParam" else ""
 
 		val url = when {
-			query.isNotEmpty() -> "https://${domain}/search/?q=${query.urlEncoded()}&page=$page$searchSortParam"
-			langTag != null -> "https://${domain}/language/${langTag.key.substringAfter("language:")}/${if (sortParam != null) "$sortParam/" else ""}?page=$page"
-			tagFilter != null -> {
-				val slug = tagFilter.title.lowercase().replace(' ', '-')
-				"https://${domain}/tag/$slug/${if (sortParam != null) "$sortParam/" else ""}?page=$page"
-			}
-			sortParam != null -> "https://${domain}/search/?q=%22%22&page=$page$searchSortParam"
-			else -> "https://${domain}/?page=$page"
+			query.isNotEmpty() -> "https://${operation.domain}/search/?q=${query.urlEncoded()}&page=$page$searchSortParam"
+            langTag != null -> {
+                val language = langTag.key.substringAfter("language:")
+                "https://${operation.domain}/language/$language/?page=$page$searchSortParam"
+            }
+            tagFilter != null -> tagUrl(tagFilter, operation).newBuilder()
+                .addQueryParameter("page", page.toString())
+                .apply { if (sortParam != null) addQueryParameter("sort", sortParam) }
+                .build().toString()
+			sortParam != null -> "https://${operation.domain}/search/?q=%22%22&page=$page$searchSortParam"
+			else -> "https://${operation.domain}/?page=$page"
 		}
-        val resp = webClient.httpGet(url, getRequestHeaders())
-        checkProtection(resp, url)
-        if (!resp.isSuccessful) return emptyList()
-        val doc = resp.parseHtml()
-        return parseGalleryList(doc)
+        val doc = webClient.httpGet(url, operation.headers).parseHtml()
+        return parseGalleryList(doc, operation.domain)
     }
 
-    internal fun parseGalleryList(doc: Document): List<Content> {
+    private suspend fun tagUrl(tag: ContentTag, operation: RequestContext): HttpUrl {
+        val id = tag.key.substringAfter("tag:")
+        val endpoint = "https://${operation.domain}/api/v2/tags/ids"
+        fun invalidTag(field: String, cause: Throwable? = null): Nothing =
+            throw ParseException("NH tag $id: invalid $field", endpoint, cause)
+
+        if (!id.matches(Regex("[1-9][0-9]*")) || id.toLongOrNull() == null) invalidTag("id")
+        // Saved tag keys also include characters/artists; only the site knows their canonical route.
+        val tags = webClient.httpGet("$endpoint?ids=$id", operation.headers).use {
+            currentCoroutineContext().ensureActive()
+            try {
+                it.parseJsonArray()
+            } catch (e: JSONException) {
+                invalidTag("response JSON", e)
+            }
+        }
+        currentCoroutineContext().ensureActive()
+        if (tags.length() != 1) invalidTag("response")
+        val metadata = tags.optJSONObject(0) ?: invalidTag("response")
+        if (metadata.opt("id")?.toString() != id) invalidTag("id")
+        val path = metadata.opt("url") as? String ?: invalidTag("url")
+        if (!path.matches(Regex("/(tag|character|artist|group|parody|category|language)/[^/?#\\\\]+/"))) {
+            invalidTag("url")
+        }
+        val base = "https://${operation.domain}/".toHttpUrlOrNull() ?: invalidTag("domain")
+        val url = base.resolve(path) ?: invalidTag("url")
+        if (url.scheme != base.scheme || url.host != base.host || url.port != base.port ||
+            url.pathSegments.size != 3 || url.pathSegments[1].isEmpty() ||
+            url.query != null || url.fragment != null
+        ) {
+            invalidTag("url")
+        }
+        return url
+    }
+
+    internal fun parseGalleryList(doc: Document, requestDomain: String = domain): List<Content> {
         return doc.select(".gallery").mapNotNull { el ->
             val a = if (el.tagName() == "a") el else el.selectFirst("a")
             if (a == null) return@mapNotNull null
@@ -869,9 +897,7 @@ internal class NhentaiParser(context: ContentLoaderContext) :
                 ?: el.select("div").lastOrNull()?.text()?.trim()
                 ?: ""
             val img = el.selectFirst("img") ?: el.selectFirst("a > img")
-            val cover = img?.attr("data-src")
-                ?: img?.attr("src")
-                ?: img?.attr("data-cfsrc")
+            val cover = img?.src(arrayOf("data-src", "src", "data-cfsrc"))
 			val langAttribute = el.attr("data-tags")
 			val lang = if (langAttribute.isNotEmpty()) {
 				langAttribute.split(" ").firstOrNull {
@@ -894,7 +920,7 @@ internal class NhentaiParser(context: ContentLoaderContext) :
                 title = title,
                 altTitles = emptySet(),
                 url = id,
-                publicUrl = "https://${domain}/g/$id",
+                publicUrl = "https://$requestDomain/g/$id",
                 rating = org.skepsun.kototoro.parsers.model.RATING_UNKNOWN,
                 contentRating = ContentRating.ADULT,
                 coverUrl = coverUrl,
@@ -911,53 +937,86 @@ internal class NhentaiParser(context: ContentLoaderContext) :
         return raw.removePrefix("nhentai").removePrefix("nh")
     }
 
-	private val imageHost = "https://i3.nhentai.net"
+    private data class RequestContext(val domain: String, val headers: Headers)
 
-    private fun imageExt(type: String): String = when (type.lowercase()) {
-        "p" -> "png"
-        "g" -> "gif"
-        "w" -> "webp"
-        else -> "jpg"
+    private val cdnCache = NhentaiCdnCache()
+
+    private fun requestContext(): RequestContext {
+        val requestDomain = domain
+        return RequestContext(requestDomain, getRequestHeaders().newBuilder()
+            .add("Referer", "https://$requestDomain/").build())
     }
 
-    private suspend fun fetchGallery(id: String): JSONObject? {
-        val url = "https://${domain}/api/gallery/$id"
-        val resp = webClient.httpGet(url, getRequestHeaders())
-        checkProtection(resp, url)
-        if (resp.isSuccessful) {
-            return resp.parseJson()
+    private fun invalid(operation: RequestContext, id: String, field: String, cause: Throwable? = null): Nothing {
+        throw ParseException("NH $id: invalid $field", "https://${operation.domain}/api/v2/galleries/$id", cause)
+    }
+
+    private suspend fun fetchGallery(id: String, operation: RequestContext): JSONObject {
+        val json = webClient.httpGet("https://${operation.domain}/api/v2/galleries/$id", operation.headers).use {
+            currentCoroutineContext().ensureActive()
+            try {
+                it.parseJson()
+            } catch (e: JSONException) {
+                invalid(operation, id, "response JSON", e)
+            }
         }
-        return fetchGalleryFromHtml(id)
+        currentCoroutineContext().ensureActive()
+        if (json.opt("id")?.toString() != id) invalid(operation, id, "id")
+        return json
     }
 
-    private suspend fun fetchGalleryFromHtml(id: String): JSONObject? {
-        val url = "https://${domain}/g/$id/1/"
-        val resp = webClient.httpGet(url, getRequestHeaders())
-        checkProtection(resp, url)
-        if (!resp.isSuccessful) return null
-        val doc = resp.parseHtml()
-        val script = doc.select("script").firstOrNull { it.data().contains("window._gallery") }?.data() ?: return null
-        val jsonText = script.substringAfter("JSON.parse(\"", "").substringBefore("\");", "")
-        if (jsonText.isEmpty()) return null
-        val decoded = jsonText
-            .replace("\\u0022", "\"")
-            .replace("\\u005C", "\\")
-        return runCatching { JSONObject(decoded) }.getOrNull()
+    private suspend fun cdn(operation: RequestContext): NhentaiCdnConfig =
+        cdnCache.get(operation.domain, { domain }) {
+            val url = "https://${operation.domain}/api/v2/cdn"
+            webClient.httpGet(url, operation.headers).use { response ->
+                currentCoroutineContext().ensureActive()
+                val json = try {
+                    response.parseJson()
+                } catch (e: JSONException) {
+                    throw ParseException("NH CDN: invalid JSON", url, e)
+                }
+                fun server(field: String): HttpUrl {
+                    val array = json.optJSONArray(field)
+                    val selected = (0 until (array?.length() ?: 0)).asSequence()
+                        .mapNotNull { (array?.opt(it) as? String)?.toHttpUrlOrNull() }
+                        .firstOrNull { it.isHttps }
+                    return selected ?: throw ParseException("NH CDN: invalid $field", url)
+                }
+                NhentaiCdnConfig(server("image_servers"), server("thumb_servers"))
+            }
+        }
+
+    private suspend fun imageUrl(
+        path: String,
+        operation: RequestContext,
+        id: String,
+        field: String,
+        thumbnail: Boolean,
+    ): HttpUrl {
+        path.toHttpUrlOrNull()?.let {
+            if (!it.isHttps) invalid(operation, id, field)
+            return it
+        }
+        val config = cdn(operation)
+        val base = if (thumbnail) config.thumbnails else config.images
+        return base.resolve(path)?.takeIf { it.isHttps } ?: invalid(operation, id, field)
     }
+
+    private fun requiredPath(json: JSONObject?, operation: RequestContext, id: String, field: String): String =
+        (json?.opt("path") as? String)?.takeIf { it.isNotBlank() } ?: invalid(operation, id, field)
 
     override suspend fun getDetails(manga: Content): Content {
+        val operation = requestContext()
         val galleryId = normalizeId(manga.url)
-        val json = fetchGallery(galleryId) ?: return manga
+        val json = fetchGallery(galleryId, operation)
 
         val title = json.optJSONObject("title")?.optString("english")
             ?.ifEmpty { json.optJSONObject("title")?.optString("japanese") }
             ?.ifEmpty { manga.title }
             ?: manga.title
 
-        val mediaId = json.optString("media_id")
-        val images = json.optJSONObject("images")
-        val thumbType = images?.optJSONObject("thumbnail")?.optString("t") ?: "j"
-        val coverUrl = "https://t.nhentai.net/galleries/$mediaId/cover.${imageExt(thumbType)}"
+        val coverPath = requiredPath(json.optJSONObject("cover"), operation, galleryId, "cover.path")
+        val coverUrl = imageUrl(coverPath, operation, galleryId, "cover.path", thumbnail = true).toString()
 
 		var languageName: String? = null
 		var translated = false
@@ -1036,17 +1095,65 @@ internal class NhentaiParser(context: ContentLoaderContext) :
     }
 
     override suspend fun getPages(chapter: ContentChapter): List<ContentPage> {
-        val json = fetchGallery(normalizeId(chapter.url)) ?: return emptyList()
-        val mediaId = json.optString("media_id")
-        val pages = json.optJSONObject("images")?.optJSONArray("pages") ?: return emptyList()
-        val result = mutableListOf<ContentPage>()
-        for (i in 0 until pages.length()) {
-            val type = pages.optJSONObject(i)?.optString("t") ?: "j"
-            val url = "$imageHost/galleries/$mediaId/${i + 1}.${imageExt(type)}"
-            result.add(ContentPage(id = generateUid(url), url = url, preview = url, source = source))
+        val operation = requestContext()
+        val galleryId = normalizeId(chapter.url)
+        val json = fetchGallery(galleryId, operation)
+        val count = json.opt("num_pages")?.toString()?.toIntOrNull()?.takeIf { it > 0 }
+            ?: invalid(operation, galleryId, "num_pages")
+        val array = json.optJSONArray("pages") ?: invalid(operation, galleryId, "pages")
+        if (array.length() == 0) invalid(operation, galleryId, "pages")
+        if (array.length() != count) invalid(operation, galleryId, "num_pages")
+        val paths = sortedMapOf<Int, String>()
+        for (index in 0 until array.length()) {
+            val page = array.optJSONObject(index)
+            val number = page?.opt("number")?.toString()?.toIntOrNull()
+                ?: invalid(operation, galleryId, "pages[$index].number")
+            if (number !in 1..count || paths.containsKey(number)) {
+                invalid(operation, galleryId, "pages[$index].number=$number")
+            }
+            paths[number] = requiredPath(page, operation, galleryId, "pages[number=$number].path")
         }
-        return result
+        return paths.map { (number, path) ->
+            val url = imageUrl(path, operation, galleryId, "pages[number=$number].path", thumbnail = false)
+            val identity = url.encodedPath.removePrefix("/") + (url.encodedQuery?.let { "?$it" } ?: "")
+            ContentPage(
+                id = generateUid(identity),
+                url = url.toString(),
+                preview = url.toString(),
+                headers = mapOf("Referer" to "https://${operation.domain}/"),
+                source = source,
+            )
+        }
     }
 
     override suspend fun getPageUrl(page: ContentPage): String = page.url
+}
+
+internal data class NhentaiCdnConfig(val images: HttpUrl, val thumbnails: HttpUrl)
+
+/** NH 局部串行缓存；旧域操作可以完成，但不能发布到当前域缓存。 */
+internal class NhentaiCdnCache(private val nanoTime: () -> Long = System::nanoTime) {
+    private data class Entry(val domain: String, val value: NhentaiCdnConfig, val validatedAt: Long)
+    private val mutex = Mutex()
+    private var entry: Entry? = null
+
+    suspend fun get(
+        requestDomain: String,
+        currentDomain: () -> String,
+        load: suspend () -> NhentaiCdnConfig,
+    ): NhentaiCdnConfig = mutex.withLock {
+        currentCoroutineContext().ensureActive()
+        val current = currentDomain()
+        if (entry?.domain != current) entry = null
+        val cached = entry
+        if (requestDomain == current && cached != null && nanoTime() - cached.validatedAt < 600_000_000_000L) {
+            return@withLock cached.value
+        }
+        val loaded = load()
+        val validatedAt = nanoTime()
+        currentCoroutineContext().ensureActive()
+        // 最后取消检查与同步提交之间不挂起；提交后的取消不回滚有效缓存。
+        if (currentDomain() == requestDomain) entry = Entry(requestDomain, loaded, validatedAt)
+        loaded
+    }
 }
