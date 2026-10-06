@@ -21,6 +21,8 @@ last_diff_commit: 921c51b97a8d342af67f17af4b291a1edf69f360
 
 ## Reconciliation history
 
+- 2026-10-06：用户在交付后回复确认，完成审阅验收并授权合并启用。实现文件与 9941a372 一致，复用证据；no-ff 合并为 f4fabb5d 并推送 master 后启用 Actions，首次运行 https://github.com/BarrayAllen0818/kotoyomi-plugins/actions/runs/37432055483 成功，31 测试及真实 Git 比较通过，pending_count=0，--status 正确解析。Issue #1 正文更新上线状态，无更新评论。仅补记文档，保留任务分支及其他工作流；待合入通知、邮件送达和下一次定时触发尚未实测。
+
 - 2026-10-06：用户在独立实现授权请求后回复确认，implementation=authorized，lint --gate 通过。新建 Git 差集/通知/查询脚本、工作流、31 个离线测试；6 个图测试、11 个通知测试、9 个适配测试先取得缺功能 RED 后实现，随后补充 5 个边界验证。发布逻辑原有 9 个测试通过；actionlint、语法与差异检查通过。Serena 的 Kotlin 服务不支持 Python 符号抽取，文件级 replace_content 可用，使用已知实现与文件级工具审查；未采用旧 GitNexus 索引。
 - 2026-10-06：范围审查覆盖远端历史、消息去重、日志消费、CLI 权限、定时工作流及文档入口。发现测试直接调用 main 会打印生产日志标记，污染真实 runner 的 --status 解析，已捕获测试输出并通过最终 31 个测试；重复日志用例修正为真实换行后单独复验通过。无未处理发现。真实隔离 Git 获取证明当前 pending_count=0，B 被两端包含；创建并绑定 Issue #1，--status 正确报告未部署。尚未合并/启用/执行真实 runner，保留为上线验证项。
 
