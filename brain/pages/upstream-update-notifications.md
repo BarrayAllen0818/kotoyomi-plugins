@@ -6,7 +6,9 @@ status: active
 tags: [upstream, notifications]
 created: "2026-10-06T14:57:12"
 updated: "2026-10-06T15:43:03"
+updated: "2026-10-06T15:51:26"
 ---
+
 
 <!-- compiled_truth -->
 ## 已确认的提醒语义
@@ -37,7 +39,11 @@ synced 表示该次检查远端 master 已包含全部上游提交；pending 表
 
 需求 PRD.md REQ-004，稳定方案 .gantry/upstream-update-notifier.md。用户已确认整体方案并在单独请求后授权实现。检查脚本、工作流及 31 个离线测试已实现；Issue #1 已创建并绑定。真实远端隔离比较得到个人 master 260a9c36c437506309c867faf4eab009cec6d24b 包含上游 ca313756，pending_count=0；这是 2026-10-06 验证快照，不能当作未来现状。
 
-当前仍待用户审阅验收，尚未合入默认分支，Actions 仍禁用，定时检查尚未生效。--status 实测能读取 Issue 并报告工作流 API 404；这是未部署状态，不是已同步证据。用户验收后按已确认方案合并推送、启用 Actions、执行一次真实检查并核对输出；届时更新本页部署状态。真实 runner、GITHUB_TOKEN 发评论及邮件送达均未验收，离线测试不替代这些证据。
+2026-10-06 用户在交付后确认审阅验收并授权合并上线。实现已 no-ff 合入 master 并推送（f4fabb5d），仓库 Actions enabled=true，Check upstream commits 工作流 active。每天北京时间 06:00 的调度已配置启用。
+
+首次真实手动运行成功：https://github.com/BarrayAllen0818/kotoyomi-plugins/actions/runs/37432055483 。runner 上 31 个离线测试通过；15:49:23+08:00 比较个人 master f4fabb5d 与上游 ca313756，synced、pending_count=0，因此没有更新评论。--status 已成功读取并解析该运行，stale=false。Issue #1 已更新上线说明。
+
+后续自然定时触发、有待合入提交时的真实 GITHUB_TOKEN 发评论及邮件/手机送达仍需相应事件验证，不将 synced 的无通知运行当作发消息验证。需要邮件或手机提醒时用户须自行确认 GitHub 的 Issue 订阅与通知设置。当前远端是否同步须查询新证据，不将上述快照视为永久结果。
 
 
 ## Timeline
@@ -82,4 +88,10 @@ synced 表示该次检查远端 master 已包含全部上游提交；pending 表
   kind: decision
   summary: "实现手动查询入口并绑定 Issue 1，记录离线和远端只读证据，明确未上线待验收"
   source: "2026-10-06 用户实现授权；check_upstream.py；Issue #1"
+  affects: [upstream-update-notifications]
+
+- time: 2026-10-06T15:51:26
+  kind: decision
+  summary: "用户验收后合并推送并启用 Actions，首次真实运行和手动查询成功"
+  source: "2026-10-06 用户确认；GitHub run 37432055483"
   affects: [upstream-update-notifications]
