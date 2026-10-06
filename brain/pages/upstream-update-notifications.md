@@ -5,29 +5,39 @@ category: decision
 status: active
 tags: [upstream, notifications]
 created: "2026-10-06T14:57:12"
-updated: "2026-10-06T15:24:39"
+updated: "2026-10-06T15:43:03"
 ---
 
 <!-- compiled_truth -->
 ## 已确认的提醒语义
 
-GitHub 托管 Actions 每天北京时间 06:00 检查 skepsun/kototoro-parsers/master 的提交是否已被 BarrayAllen0818/kotoyomi-plugins/master 的历史包含。只要仍有未合入提交，即使上游没再更新、昨天已提醒，也每天继续提醒；全部合并并推送到个人远端 master 后，下次检查停止提醒。
+GitHub 托管 Actions 每天北京时间 06:00 比较 skepsun/kototoro-parsers/master 与 BarrayAllen0818/kotoyomi-plugins/master 的提交历史。只要上游原提交仍未被个人远端 master 包含，就每天提醒；全部合并并推送后下次成功检查停止。仅 fetch、本地合并未 push、其他分支包含、读过或关闭 Issue 都不算完成。同日重试去重不影响次日提醒。检查失败不等于已同步。
 
-用户定义的“已拉取”是合并且推送到远端并保留上游原始提交记录。仅 fetch、本地合并未 push、其他远端分支包含或单纯阅读提醒，都不算完成。不要以通知水位、已读标记或本地状态代替远端历史。同日重试可以去重，但不能抑制次日提醒。检查失败不等于已同步。
+初始已同步基线固定为 ca313756e395b5ddbd201e01cc01ece01078d15c（用户选择 B），不在首次运行时更换为届时最新提交。运行时直接比较两端完整历史，不以通知水位决定同步状态。仅提醒，不自动合并、构建或发布插件。
 
-## 初始基线
+## 手动查询入口
 
-2026-10-06 用户将初始选项改为 B：指定当时本地已拉取的 upstream/master，即 ca313756e395b5ddbd201e01cc01ece01078d15c。不取部署或首次定时运行时最新提交来跳过尚未合入的变化。该 SHA 是初始已同步证据，后续判断始终比较两条远端 master，不需要人工更新本地水位。
+用户在本项目说“检查上游更新”时，在项目根目录运行：
 
-## 手动查询约定
+```powershell
+python -B .github/scripts/check_upstream.py --status
+```
 
-用户在本项目说“检查上游更新”时，按本页入口读取远端提醒及最近检查结果，说明检查时间、未合入提交和证据链接；不在每次任务开始时自动查询，不增加 Codex 定时轮询，不修改 AGENTS.md。旧提醒只是历史，不能据此断定当前尚未合并；结果过期或失败时如实说明。仅提醒，不自动合并、构建或发布插件。
+使用既有 GitHub CLI 登录或 GH_TOKEN，默认只读，不发送消息、不触发工作流、不 fetch 到用户仓库。项目位于 D:/B_Files/A_Work/AgentWorkspace/kotoyomi-plugins。
 
-## 入口状态
+固定 Issue：https://github.com/BarrayAllen0818/kotoyomi-plugins/issues/1 。
+工作流：.github/workflows/check-upstream.yml，显示名称 Check upstream commits。
+工作流入口：https://github.com/BarrayAllen0818/kotoyomi-plugins/actions/workflows/check-upstream.yml 。
 
-需求为 PRD.md REQ-004，方案为 .gantry/upstream-update-notifier.md。目标仓库：https://github.com/BarrayAllen0818/kotoyomi-plugins 。工作流、脚本和提醒 Issue 尚未建立，不能声称有可用入口；实现后在此补齐准确 Issue URL、工作流和命令。
+解释输出时同时报告 latest_run 和 last_successful_check：最新失败不能被旧成功掩盖；无运行、日志不可得或 detail_error 时明确未知，不从历史评论推断已同步。stale=true 表示超过 30 小时未成功检查。结果只代表截至 checked_at 的远端快照，不是手动查询当刻的实时 Git 比较。
 
-2026-10-06 当前 API 核实 Actions enabled=false，仍未启用。方案已按远端合入语义修订；用户在完整方案解释后确认整体技术方案，注解与稳定性复核完成，无新增待决项。独立实现授权尚未取得。此时个人远端 master=260a9c36c437506309c867faf4eab009cec6d24b，包含上游 ca313756，无待合入项；该结果是当时快照，后续查询需获取当前证据。
+synced 表示该次检查远端 master 已包含全部上游提交；pending 表示仍需合入，daily_reminder_exists 只代表今日已通知，不能说已经完成。不要每次开始任务自动查询，不增加 Codex 定时轮询，不修改 AGENTS.md。
+
+## 实现与部署边界
+
+需求 PRD.md REQ-004，稳定方案 .gantry/upstream-update-notifier.md。用户已确认整体方案并在单独请求后授权实现。检查脚本、工作流及 31 个离线测试已实现；Issue #1 已创建并绑定。真实远端隔离比较得到个人 master 260a9c36c437506309c867faf4eab009cec6d24b 包含上游 ca313756，pending_count=0；这是 2026-10-06 验证快照，不能当作未来现状。
+
+当前仍待用户审阅验收，尚未合入默认分支，Actions 仍禁用，定时检查尚未生效。--status 实测能读取 Issue 并报告工作流 API 404；这是未部署状态，不是已同步证据。用户验收后按已确认方案合并推送、启用 Actions、执行一次真实检查并核对输出；届时更新本页部署状态。真实 runner、GITHUB_TOKEN 发评论及邮件送达均未验收，离线测试不替代这些证据。
 
 
 ## Timeline
@@ -66,4 +76,10 @@ GitHub 托管 Actions 每天北京时间 06:00 检查 skepsun/kototoro-parsers/m
   kind: decision
   summary: "用户批准整体方案，完成注解与稳定性复核，等待独立实现授权"
   source: "2026-10-06 完整方案解释后用户回复：确认"
+  affects: [upstream-update-notifications]
+
+- time: 2026-10-06T15:43:03
+  kind: decision
+  summary: "实现手动查询入口并绑定 Issue 1，记录离线和远端只读证据，明确未上线待验收"
+  source: "2026-10-06 用户实现授权；check_upstream.py；Issue #1"
   affects: [upstream-update-notifications]

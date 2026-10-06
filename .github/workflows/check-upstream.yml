@@ -1,0 +1,33 @@
+name: Check upstream commits
+
+on:
+  schedule:
+    # 22:00 UTC = 06:00 Asia/Shanghai on the following day.
+    - cron: '0 22 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: upstream-master-reminder
+  cancel-in-progress: false
+
+jobs:
+  check:
+    if: github.repository == 'BarrayAllen0818/kotoyomi-plugins' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - name: Verify reminder behavior offline
+        run: python3 -B .github/scripts/test_check_upstream.py
+      - name: Check published history and remind
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -B .github/scripts/check_upstream.py --notify

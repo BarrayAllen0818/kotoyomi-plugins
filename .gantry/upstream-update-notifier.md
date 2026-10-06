@@ -2,11 +2,11 @@
 
 **Target:** 实现 PRD.md REQ-004：每天北京时间 06:00 检查个人远端 master 是否包含上游提交，未全部包含则每天提醒；用户说“检查上游更新”时由 Codex 读取固定入口。
 
-<!-- gantry:workflow pseudocode=approved annotations=complete stabilization=complete implementation=pending -->
+<!-- gantry:workflow pseudocode=approved annotations=complete stabilization=complete implementation=authorized -->
 
 ## 当前状态与事实
 
-用户已确认需求阶段完成并进入方案阶段，随后明确选 B，以当前已拉取的 ca313756e395b5ddbd201e01cc01ece01078d15c 为初始基线。“已拉取”指上游提交已合并并推送到个人远端、保留原提交历史；未完成则每天提醒。2026-10-06 用户在收到四步运作解释、范围及验证说明后批准当前整体方案。六项 AI 步骤已接受，注解与稳定性复核完成，无新待决项；实现授权仍待单独取得。
+用户已确认需求阶段完成并进入方案阶段，随后明确选 B，以当前已拉取的 ca313756e395b5ddbd201e01cc01ece01078d15c 为初始基线。“已拉取”指上游提交已合并并推送到个人远端、保留原提交历史；未完成则每天提醒。2026-10-06 用户在收到四步运作解释、范围及验证说明后批准当前整体方案。六项 AI 步骤已接受，注解与稳定性复核完成，无新待决项；用户在单独实现授权请求后回复确认，已授权按当前稳定方案实施；主线合并和 Actions 启用仍待交付验收。
 
 沿用 codex/upstream-update-notifier，任务代码基线 ce6231862a9a6eb4b5f9b081b2a55c8527cbb60b。Gantry guided、聊天审阅，不启动浏览器。行为、数据归属和失败边界是设计约束；私有函数划分与测试接线是可调整建议。
 
@@ -116,4 +116,14 @@
 
 ## Code
 
-尚未实现，无代码快照。
+实现已完成，源码快照将在实施提交后绑定提交记录。固定提醒 Issue 为 https://github.com/BarrayAllen0818/kotoyomi-plugins/issues/1 。
+
+## 实施验证与审查
+
+2026-10-06 单独实现授权已取得，lint --gate 通过。实际入口为 GitSnapshot.refresh/matches（隔离完整 Git 图）、check/reminder_for_day（每日提醒）、GitHub（API）、status_report/result_from_logs（只读查询）及 main（默认只读，写模式限制到固定默认分支工作流）。工作流是 check-upstream.yml，cron、权限和串行配置与方案一致。
+
+31 个离线测试通过，分别覆盖真实 Git 图、通知与失败恢复、只读 API/日志；原有 9 个发布逻辑测试通过。actionlint、Python AST 语法、Git 差异检查通过。新增测试最初分别因缺 Git 实现、缺通知引擎、缺 API 适配取得失败证据。审查发现离线测试打印生产日志标记会破坏实际日志读取，已捕获测试输出，增加重复/错误日志等验证；最终无未处理缺陷。
+
+真实只读隔离 Git 获取通过：个人远端 master=260a9c36c437506309c867faf4eab009cec6d24b，上游=ca313756e395b5ddbd201e01cc01ece01078d15c，pending_count=0，B 被两端包含，引用复核一致。Issue #1 已创建；--status 能读 Issue 并正确报告未部署工作流 API 404。
+
+实现未更改既有解析器、发布逻辑或 AGENTS，未构建插件。当前仍待用户审阅验收，未合并默认分支、未启用 Actions、未执行真实 runner，真实更新评论及通知送达尚无证据。验收后依第 6 步上线，并将 Issue 正文中的部署准备状态改为实际状态；不把本地测试标记为远端定时已生效。

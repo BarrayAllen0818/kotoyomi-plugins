@@ -21,6 +21,9 @@ last_diff_commit: 921c51b97a8d342af67f17af4b291a1edf69f360
 
 ## Reconciliation history
 
+- 2026-10-06：用户在独立实现授权请求后回复确认，implementation=authorized，lint --gate 通过。新建 Git 差集/通知/查询脚本、工作流、31 个离线测试；6 个图测试、11 个通知测试、9 个适配测试先取得缺功能 RED 后实现，随后补充 5 个边界验证。发布逻辑原有 9 个测试通过；actionlint、语法与差异检查通过。Serena 的 Kotlin 服务不支持 Python 符号抽取，文件级 replace_content 可用，使用已知实现与文件级工具审查；未采用旧 GitNexus 索引。
+- 2026-10-06：范围审查覆盖远端历史、消息去重、日志消费、CLI 权限、定时工作流及文档入口。发现测试直接调用 main 会打印生产日志标记，污染真实 runner 的 --status 解析，已捕获测试输出并通过最终 31 个测试；重复日志用例修正为真实换行后单独复验通过。无未处理发现。真实隔离 Git 获取证明当前 pending_count=0，B 被两端包含；创建并绑定 Issue #1，--status 正确报告未部署。尚未合并/启用/执行真实 runner，保留为上线验证项。
+
 - 2026-10-06：用户在完整方案解释后回复“确认”，接受第 1–6 步整体；六项步骤改为 accept，保留 B 与合入定义的既有决定。复核 Git 差集、每日去重、同日/隔日、POST 结果不确定、历史评论与最近检查分离、默认分支上线和既有 CI 影响，未发现新实质决策，无需改行为或增注解。pseudocode=approved、annotations/stabilization=complete，implementation=pending。本轮仅文档状态与证据更新，源码、工作流及测试尚未创建，未触发部署或发送消息。
 
 - 2026-10-06：用户最初回复 A 后中断，随后明确指定 B、以当前已拉取 upstream/master 为基线；两次中断前仅只读检查，未落地 A。核实指定 SHA 为 ca313756e395b5ddbd201e01cc01ece01078d15c，未 fetch。用户进一步要求持续提醒未合入提交，明确完成含义为上游提交合并并推送到远端。已同步修订 REQ-004、方案正文和 Brain；此前已确认需求阶段准入保留，整体技术方案及实现授权仍 pending。
