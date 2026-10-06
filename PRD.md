@@ -34,7 +34,7 @@
 
 ## REQ-003：统一插件版本与验收发布流程
 
-状态：用户明确要求本任务不使用 dev-workflow，沿用已确认目标直接实施。发布工作流与共用脚本已完成：显式触发、按远端 code 递增、保留历史、同产物跳过及 HTTP 哈希核对。本地 9 个发布测试、actionlint、语法检查、Gradle classpath 与独立 D8 打包验证通过；实现已提交推送；GitHub 仓库 Actions 当前为 enabled=false，远端 CI 未运行，保留为验证限制。待用户审阅验收后合并。当前已验收插件仍为 1.0.137，未发布新插件。
+状态：用户明确要求本任务不使用 dev-workflow，沿用已确认目标直接实施。发布工作流与共用脚本已完成：显式触发、按远端 code 递增、保留历史、同产物跳过及 HTTP 哈希核对。本地 9 个发布测试、actionlint、语法检查、Gradle classpath 与独立 D8 打包验证通过；实现已提交推送；GitHub 仓库 Actions 当前为 enabled=false，远端 CI 未运行，保留为验证限制。用户于 2026-10-06 对交付及合并请求明确回复“确认”，REQ-003 审阅验收通过，进入主线合并推送收尾。当前已验收插件仍为 1.0.137，未发布新插件。
 
 ### 核心需求
 
@@ -93,3 +93,5 @@
 - 2026-10-06：先验证版本计算测试有效失败，再完成实现；本地 9 个测试覆盖版本字段、溢出/损坏索引、历史保留、默认不推送、重复发布、竞争拒绝、错误产物/脏工作区，以及 HTTP 旧索引和错误下载。actionlint、YAML/Bash/Python 语法、git diff 检查通过；pluginDexClasspath 成功，固定 D8 对已有 JVM JAR 生成 build/release-validation/plugin.jar 成功且日志为空。未重跑无关解析器测试或重建 JVM JAR，未替换 build/libs 验收产物；1.0.137 SHA-256 仍为 b0d0292a25241724d465d6245faaa6a9b250828e9bf57a88c35e4c285c0a09cb。完整差异审查未发现未处理缺陷；未触发真实发布工作流，GitHub runner 的构建/远端发布全过程不宣称实测。
 
 - 2026-10-06：实现提交 d3c9e5a5956061ca969266636a52939e72e324b7 已推送 origin/ci/plugin-release-policy。使用新脚本对真实 origin 和已验收产物执行不带 --push 的检查，返回 unchanged、code 137、repo 提交 fe681da35393aec1e0b902cf891406bc03922bf8，未创建发布候选或更改远端。GitHub API 确认仓库 Actions enabled=false，未产生远端测试运行；本任务未启用 Actions 或触发真实发布。master 仍为 ec82f0e20510b6908be6d16d368a60c819c4ec83，新流程待审阅合并后成为默认规则。
+
+- 2026-10-06：用户在已报告实现、验证、Actions 禁用限制及合并请求后明确回复“确认”，确认 REQ-003 审阅验收并授权合并。当前实现及验证输入与 d3c9e5a5 一致，此后仅文档记录变化，复用 9 个测试、actionlint、语法、classpath 和独立 D8 验证，不重复构建或发版。按 --no-ff 合并 ci/plugin-release-policy 至 master 并自动推送，保留分支；不启用 Actions，repo 及 1.0.137 保持原样。
