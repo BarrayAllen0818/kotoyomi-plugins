@@ -1,63 +1,70 @@
 name: Build and Release Plugin
 
+# Publishing is explicit. Merging accepted source must not rebuild or republish it.
 on:
-  push:
-    branches:
-      - master
-      - main
   workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: plugin-repo-publication
+  cancel-in-progress: false
+
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
         with:
-          java-version: '17'
-          distribution: 'temurin'
-          
-      - name: Build standard JAR
-        run: ./gradlew jar --no-daemon
-        
-      - name: D8 Dexing and Packaging
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+
+      - name: Verify publication logic
+        run: python3 .github/scripts/test_publish_plugin.py
+
+      - name: Build JVM JAR and collect D8 classpath
+        run: ./gradlew jar pluginDexClasspath --init-script .github/scripts/plugin-classpath.gradle --no-daemon
+
+      - name: Package DEX plugin
+        shell: bash
         run: |
-          BUILD_TOOLS_DIR=$(ls -d $ANDROID_HOME/build-tools/* | tail -1)
-          D8_PATH="$BUILD_TOOLS_DIR/d8"
-          ANDROID_JAR="$ANDROID_HOME/platforms/android-34/android.jar"
-          
-          cd build/libs
-          JAR_FILE=$(ls *.jar | head -n 1)
-          $D8_PATH --release --lib $ANDROID_JAR --output . $JAR_FILE
-          
-          jar cvf plugin.jar classes.dex
-          
-          # Setup deploy directory
-          mkdir -p ../../deploy/apk
-          cp plugin.jar ../../deploy/apk/
+          set -euo pipefail
+          mkdir -p build/plugin-tools
+          curl --fail --location --retry 2 https://storage.googleapis.com/r8-releases/raw/9.3.16/r8.jar --output build/plugin-tools/r8.jar
+          echo 'e761e5899832ce3b369a9a7dfa10b4b84592495d68a6b1663c429f6e499a8469  build/plugin-tools/r8.jar' | sha256sum --check
+          test -f "$ANDROID_HOME/platforms/android-34/android.jar"
+          mapfile -t jars < <(find build/libs -maxdepth 1 -name '*.jar' ! -name '*-plugin.jar' ! -name '*-sources.jar' ! -name '*-javadoc.jar')
+          test "${#jars[@]}" -eq 1
+          classpath=()
+          for dependency in build/plugin-classpath/*.jar; do
+            classpath+=(--classpath "$dependency")
+          done
+          java -Xmx1g -cp build/plugin-tools/r8.jar com.android.tools.r8.D8 --release --min-api 21 --lib "$ANDROID_HOME/platforms/android-34/android.jar" "${classpath[@]}" --output build/libs/kototoro-parsers-plugin.jar "${jars[0]}"
 
-          # Create index.min.json for the repository
-          # Format follows Mihon extension repo structure loosely
-          cat << EOF > ../../deploy/index.min.json
-          [
-            {
-              "name": "Kototoro Parsers",
-              "pkg": "org.skepsun.kototoro.parsers",
-              "version": "1.0.${{ github.run_number }}",
-              "code": ${{ github.run_number }},
-              "apk": "plugin.jar",
-              "lang": "all",
-              "nsfw": 0
-            }
-          ]
-          EOF
+      - name: Publish a history-preserving repo commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          artifact=build/libs/kototoro-parsers-plugin.jar
+          digest=$(sha256sum "$artifact" | cut -d ' ' -f 1)
+          python3 .github/scripts/publish_plugin.py --artifact "$artifact" --expected-sha256 "$digest" --source-ref "$GITHUB_SHA" --push --verify-base-url "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/repo/" | tee build/plugin-publication.jsonl
 
-      - name: Deploy to Repo Branch
-        uses: peaceiris/actions-gh-pages@v3
+      - name: Preserve publication evidence
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./deploy
-          publish_branch: repo
-          force_orphan: true
+          name: plugin-publication-${{ github.sha }}
+          path: |
+            build/libs/kototoro-parsers-plugin.jar
+            build/plugin-publication.jsonl
+          if-no-files-found: ignore

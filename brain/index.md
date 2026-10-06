@@ -1,6 +1,6 @@
 # Brain Index
 
-_Auto-generated. Last updated 2026-10-06T05:59:49.690Z._
+_Auto-generated. Last updated 2026-10-06T06:11:34.538Z._
 
 - [jm-id-direct-detail](pages/jm-id-direct-detail.md) — category: ? | status: ? | ## 已确认需求
 - [jm-id-search](pages/jm-id-search.md) — category: ? | status: ? | ## 当前需求

@@ -1,0 +1,11 @@
+// Keep packaging dependencies separate from the normal library build configuration.
+allprojects {
+    afterEvaluate { project ->
+        if (project == rootProject) {
+            tasks.register('pluginDexClasspath', Copy) {
+                from configurations.runtimeClasspath
+                into layout.buildDirectory.dir('plugin-classpath')
+            }
+        }
+    }
+}
