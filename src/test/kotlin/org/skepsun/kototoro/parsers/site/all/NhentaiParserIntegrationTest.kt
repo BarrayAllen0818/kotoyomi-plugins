@@ -58,6 +58,18 @@ class NhentaiParserIntegrationTest {
         println("NH $id: cover, first, last images verified; pages=${pages.size}")
     }
 
+    @Test
+    fun `anonymous character filter loads sorted first and second pages`() = runBlocking {
+        val context = NhIntegrationContext()
+        val parser = NhentaiParser(context).also { context.parser = it }
+        val tag = parser.getFilterOptions().availableTags.single { it.key == "tag:80930" }
+        for (page in 1..2) {
+            val list = parser.getListPage(page, SortOrder.POPULARITY, ContentListFilter(tags = setOf(tag)))
+            assertTrue(list.isNotEmpty(), "NH character page $page is empty")
+            checkImage(context, requireNotNull(list.first().coverUrl), null)
+        }
+    }
+
     private fun checkImage(context: NhIntegrationContext, url: String, headers: Map<String, String>?) {
         val request = Request.Builder().url(url)
         headers?.forEach { (name, value) -> request.header(name, value) }

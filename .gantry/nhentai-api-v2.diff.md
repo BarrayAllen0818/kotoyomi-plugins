@@ -1,11 +1,14 @@
 ---
 baseline_commit: f9965c747a848c34b7cab1da39c69e17979254ca
-last_diff_commit: 638fe1bcc4c9587d7f9a1e42ad55a97e294d8722
+last_diff_commit: 4bde20478d39287feeaa761b7b541eca7c6c19f9
 last_diff_check: 2026-10-06
 guidance: guided
 ---
 
 # Diff log
+
+- 2026-10-06：1.0.136 用户验收反馈标签筛选失败、其余正常；Serena 恢复后读取当前源码，公开 API 核实静态 ID 80930 属于 character，而插件固定生成 /tag/。用户对根因和修正方向回复“确认”；复用原实施授权进行 NH 局部纠正，保留此前有效验收。同步第 1 项标签路由及错误/快照约束，定向交接复核无新产品决定，先回归 RED 再修复。
+- 2026-10-06：完成按 tag ID 解析站点分类路径的修正；6 个新增测试已取得有效 RED，修正后 NH 24/24、JM 37/37、compileKotlin/jar/D8 通过。新增显式线上角色筛选用例已到达正确 character 路径，但 Cloudflare 403 受阻。完整本轮差异审查无未处理缺陷；仅 NH 生产文件、两个测试文件及三份任务记录有变化。待发布新版本后由用户复验标签，其余验收反馈保留，不合并主线。
 
 ## Files in scope
 

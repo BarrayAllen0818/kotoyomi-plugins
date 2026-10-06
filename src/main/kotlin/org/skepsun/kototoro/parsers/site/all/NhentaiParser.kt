@@ -34,6 +34,7 @@ import org.skepsun.kototoro.parsers.network.UserAgents
 import org.skepsun.kototoro.parsers.util.generateUid
 import org.skepsun.kototoro.parsers.util.parseHtml
 import org.skepsun.kototoro.parsers.util.parseJson
+import org.skepsun.kototoro.parsers.util.parseJsonArray
 import org.skepsun.kototoro.parsers.util.urlEncoded
 import org.json.JSONObject
 import org.skepsun.kototoro.parsers.model.ContentType
@@ -839,15 +840,50 @@ internal class NhentaiParser(context: ContentLoaderContext) :
                 val language = langTag.key.substringAfter("language:")
                 "https://${operation.domain}/language/$language/?page=$page$searchSortParam"
             }
-			tagFilter != null -> {
-				val slug = tagFilter.title.lowercase().replace(' ', '-')
-				"https://${operation.domain}/tag/$slug/?page=$page$searchSortParam"
-			}
+            tagFilter != null -> tagUrl(tagFilter, operation).newBuilder()
+                .addQueryParameter("page", page.toString())
+                .apply { if (sortParam != null) addQueryParameter("sort", sortParam) }
+                .build().toString()
 			sortParam != null -> "https://${operation.domain}/search/?q=%22%22&page=$page$searchSortParam"
 			else -> "https://${operation.domain}/?page=$page"
 		}
         val doc = webClient.httpGet(url, operation.headers).parseHtml()
         return parseGalleryList(doc, operation.domain)
+    }
+
+    private suspend fun tagUrl(tag: ContentTag, operation: RequestContext): HttpUrl {
+        val id = tag.key.substringAfter("tag:")
+        val endpoint = "https://${operation.domain}/api/v2/tags/ids"
+        fun invalidTag(field: String, cause: Throwable? = null): Nothing =
+            throw ParseException("NH tag $id: invalid $field", endpoint, cause)
+
+        if (!id.matches(Regex("[1-9][0-9]*")) || id.toLongOrNull() == null) invalidTag("id")
+        // Saved tag keys also include characters/artists; only the site knows their canonical route.
+        val tags = webClient.httpGet("$endpoint?ids=$id", operation.headers).use {
+            currentCoroutineContext().ensureActive()
+            try {
+                it.parseJsonArray()
+            } catch (e: JSONException) {
+                invalidTag("response JSON", e)
+            }
+        }
+        currentCoroutineContext().ensureActive()
+        if (tags.length() != 1) invalidTag("response")
+        val metadata = tags.optJSONObject(0) ?: invalidTag("response")
+        if (metadata.opt("id")?.toString() != id) invalidTag("id")
+        val path = metadata.opt("url") as? String ?: invalidTag("url")
+        if (!path.matches(Regex("/(tag|character|artist|group|parody|category|language)/[^/?#\\\\]+/"))) {
+            invalidTag("url")
+        }
+        val base = "https://${operation.domain}/".toHttpUrlOrNull() ?: invalidTag("domain")
+        val url = base.resolve(path) ?: invalidTag("url")
+        if (url.scheme != base.scheme || url.host != base.host || url.port != base.port ||
+            url.pathSegments.size != 3 || url.pathSegments[1].isEmpty() ||
+            url.query != null || url.fragment != null
+        ) {
+            invalidTag("url")
+        }
+        return url
     }
 
     internal fun parseGalleryList(doc: Document, requestDomain: String = domain): List<Content> {

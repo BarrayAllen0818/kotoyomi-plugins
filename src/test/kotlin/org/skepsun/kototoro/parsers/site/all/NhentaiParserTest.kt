@@ -323,6 +323,159 @@ class NhentaiParserTest {
         }
     }
 
+    @Test
+    fun `saved character tag resolves its actual category and preserves all sorts and pages`() = runBlocking {
+        val ctx = NhOfflineContext().also {
+            it.tagMetadata = """[{"id":80930,"type":"character","url":"/character/abigail-williams/"}]"""
+            it.tagListPath = "/character/abigail-williams/"
+        }
+        val parser = NhentaiParser(ctx).also { ctx.parser = it }
+        val tag = parser.getFilterOptions().availableTags.single { it.key == "tag:80930" }
+        assertEquals("abigail williams", tag.title)
+        for (order in parser.availableSortOrders) {
+            for (page in 1..2) {
+                ctx.requests.clear()
+                val cards = parser.getListPage(page, order, ContentListFilter(tags = setOf(tag)))
+                assertEquals("42", cards.single().url)
+                assertEquals(listOf("/api/v2/tags/ids", "/character/abigail-williams/"),
+                    ctx.requests.map { it.url.encodedPath })
+                assertEquals("80930", ctx.requests.first().url.queryParameter("ids"))
+                assertEquals(page.toString(), ctx.requests.last().url.queryParameter("page"))
+                assertEquals(when (order) {
+                    SortOrder.POPULARITY_TODAY -> "popular-today"
+                    SortOrder.POPULARITY_WEEK -> "popular-week"
+                    SortOrder.POPULARITY_MONTH -> "popular-month"
+                    SortOrder.POPULARITY -> "popular"
+                    else -> null
+                }, ctx.requests.last().url.queryParameter("sort"))
+            }
+        }
+    }
+
+    @Test
+    fun `tag routing uses returned path rather than display title for each category`() = runBlocking {
+        for (type in listOf("tag", "character", "artist", "group", "parody", "category", "language")) {
+            val ctx = NhOfflineContext().also {
+                it.tagMetadata = """[{"id":42,"type":"$type","url":"/$type/canonical-slug/"}]"""
+                it.tagListPath = "/$type/canonical-slug/"
+            }
+            val parser = NhentaiParser(ctx)
+            parser.getListPage(2, SortOrder.POPULARITY, ContentListFilter(
+                tags = setOf(ContentTag("Different display title", "tag:42", parser.source)),
+            ))
+            assertEquals("/$type/canonical-slug/", ctx.requests.last().url.encodedPath)
+            assertEquals("42", ctx.requests.first().url.queryParameter("ids"))
+        }
+    }
+
+    @Test
+    fun `invalid tag identity or path fails before requesting a list`() = runBlocking {
+        val badResponses = listOf(
+            "[]", "[null]", """[{"id":99,"url":"/tag/sample-tag/"}]""",
+            """[{"id":1,"url":"/tag/sample-tag/"},{"id":1,"url":"/tag/sample-tag/"}]""",
+            """[{"id":1}]""",
+            """[{"id":1,"url":"https://other.test/tag/sample-tag/"}]""",
+            """[{"id":1,"url":"//other.test/tag/sample-tag/"}]""",
+            """[{"id":1,"url":"/tag/sample-tag/?page=99"}]""",
+            """[{"id":1,"url":"/tag/sample-tag/#fragment"}]""",
+            """[{"id":1,"url":"/api/v2/galleries/42"}]""",
+        )
+        for (body in badResponses) {
+            val ctx = NhOfflineContext().also { it.tagMetadata = body }
+            val parser = NhentaiParser(ctx)
+            val error = assertThrows(ParseException::class.java) { runBlocking {
+                parser.getListPage(1, SortOrder.NEWEST, ContentListFilter(
+                    tags = setOf(ContentTag("Sample Tag", "tag:1", parser.source)),
+                ))
+            } }
+            assertTrue(error.message.orEmpty().contains("NH") && error.message.orEmpty().contains("tag 1"))
+            assertEquals(listOf("/api/v2/tags/ids"), ctx.requests.map { it.url.encodedPath }, body)
+        }
+        for (key in listOf("tag:", "tag:no-id", "tag:0", "tag:-1", "tag:1&ids=2")) {
+            val ctx = NhOfflineContext()
+            val parser = NhentaiParser(ctx)
+            assertThrows(ParseException::class.java) { runBlocking {
+                parser.getListPage(1, SortOrder.NEWEST,
+                    ContentListFilter(tags = setOf(ContentTag("Sample Tag", key, parser.source))))
+            } }
+            assertTrue(ctx.requests.isEmpty(), key)
+        }
+    }
+
+    @Test
+    fun `tag metadata failures propagate without guessed path fallback`() = runBlocking {
+        for (status in listOf(403, 404, 429, 500)) {
+            val ctx = NhOfflineContext().also { it.status = status }
+            val parser = NhentaiParser(ctx)
+            assertThrows(IOException::class.java) { runBlocking {
+                parser.getListPage(1, SortOrder.NEWEST, ContentListFilter(
+                    tags = setOf(ContentTag("Sample Tag", "tag:1", parser.source)),
+                ))
+            } }
+            assertEquals(listOf("/api/v2/tags/ids"), ctx.requests.map { it.url.encodedPath })
+        }
+    }
+
+    @Test
+    fun `tag lookup and list keep operation domain snapshot and referer`() = runBlocking {
+        val ctx = NhOfflineContext()
+        val parser = NhentaiParser(ctx).also { ctx.parser = it }
+        ctx.onRequest = { request ->
+            if (request.url.encodedPath == "/api/v2/tags/ids") ctx.config.set(parser.configKeyDomain, "new.nhentai.net")
+        }
+        val filter = ContentListFilter(tags = setOf(ContentTag("Sample Tag", "tag:1", parser.source)))
+        val card = parser.getListPage(2, SortOrder.NEWEST, filter).single()
+        assertEquals(2, ctx.requests.size)
+        assertTrue(ctx.requests.all { it.url.host == "nhentai.net" && it.header("Referer") == "https://nhentai.net/" })
+        assertEquals("https://nhentai.net/g/42", card.publicUrl)
+        ctx.requests.clear()
+        parser.getListPage(2, SortOrder.NEWEST, filter)
+        assertTrue(ctx.requests.all { it.url.host == "new.nhentai.net" &&
+            it.header("Referer") == "https://new.nhentai.net/" })
+    }
+
+    @Test
+    fun `tag metadata parsing closes responses on malformed JSON and cancellation`() = runBlocking {
+        supervisorScope {
+            for (cancel in listOf(false, true)) {
+                val ctx = NhOfflineContext()
+                val parser = NhentaiParser(ctx)
+                val filter = ContentListFilter(tags = setOf(ContentTag("Sample Tag", "tag:1", parser.source)))
+                var closed = false
+                lateinit var pending: Deferred<List<Content>>
+                ctx.bodyTransform = { _, body ->
+                    object : okhttp3.ResponseBody() {
+                        private val buffer = object : okio.ForwardingSource(
+                            okio.Buffer().writeUtf8(if (cancel) body else "invalid JSON"),
+                        ) {
+                            override fun read(sink: okio.Buffer, byteCount: Long): Long {
+                                val result = super.read(sink, byteCount)
+                                if (cancel) pending.cancel()
+                                return result
+                            }
+                            override fun close() { closed = true; super.close() }
+                        }.buffer()
+                        override fun contentType(): okhttp3.MediaType? = null
+                        override fun contentLength(): Long = -1L
+                        override fun source(): okio.BufferedSource = buffer
+                    }
+                }
+                if (cancel) {
+                    pending = async(start = CoroutineStart.LAZY) { parser.getListPage(1, SortOrder.NEWEST, filter) }
+                    pending.start()
+                    try { pending.await(); fail("Expected cancellation") } catch (_: CancellationException) { }
+                } else {
+                    val error = assertThrows(ParseException::class.java) { runBlocking {
+                        parser.getListPage(1, SortOrder.NEWEST, filter)
+                    } }
+                    assertTrue(error.message.orEmpty().contains("tag 1") && error.message.orEmpty().contains("JSON"))
+                }
+                assertTrue(closed)
+                assertEquals(listOf("/api/v2/tags/ids"), ctx.requests.map { it.url.encodedPath })
+            }
+        }
+    }
+
     private fun listDocument(attrs: String) = Jsoup.parse(
         "<a class='gallery' href='/g/42/'><img $attrs><div class='caption'>Fixture</div></a>",
         "https://nhentai.net/",
@@ -338,6 +491,8 @@ private class NhOfflineContext : ContentLoaderContext() {
     val requests: MutableList<Request> = Collections.synchronizedList(mutableListOf())
     var gallery = requireNotNull(javaClass.getResource("/fixtures/nhentai/gallery-v2.json")).readText()
     var cdn = requireNotNull(javaClass.getResource("/fixtures/nhentai/cdn.json")).readText()
+    var tagMetadata = """[{"id":1,"type":"tag","url":"/tag/sample-tag/"}]"""
+    var tagListPath = "/tag/sample-tag/"
     var status = 200
     var failure: IOException? = null
     var onRequest: ((Request) -> Unit)? = null
@@ -355,12 +510,16 @@ private class NhOfflineContext : ContentLoaderContext() {
             val body = when (request.url.encodedPath) {
                 "/api/v2/galleries/42" -> gallery
                 "/api/v2/cdn" -> cdn
+                "/api/v2/tags/ids" -> tagMetadata
+                tagListPath -> "<a class='gallery' href='/g/42/'><img src='/a.jpg'><div class='caption'>Fixture</div></a>"
+                "/tag/abigail-williams/" -> "Tag not found"
                 "/", "/search/", "/language/chinese/", "/tag/sample-tag/" ->
                     "<a class='gallery' href='/g/42/'><img src='/a.jpg'><div class='caption'>Fixture</div></a>"
                 else -> error("Unexpected offline NH request: ${request.url}")
             }
             Response.Builder().request(request).protocol(Protocol.HTTP_1_1)
-                .code(status).message("Fixture").body(bodyTransform?.invoke(request, body) ?: body.toResponseBody()).build()
+                .code(if (request.url.encodedPath == "/tag/abigail-williams/") 404 else status)
+                .message("Fixture").body(bodyTransform?.invoke(request, body) ?: body.toResponseBody()).build()
         }.build()
     override fun getConfig(source: ContentSource): ContentSourceConfig = config
     override fun getDefaultUserAgent(): String = "NH offline"

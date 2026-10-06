@@ -54,7 +54,8 @@ GitNexus 绑定本仓库，索引提交与源码基线相同；`fetchGallery` �
 1. 保留现有列表 HTML 请求与卡片映射，恢复真实图片地址和筛选分页。
   - 使用现有 JSoup URL 工具，按 `data-src`、`src`、`data-cfsrc` 依次取首个非空地址，支持协议相对及页面相对 URL；全部缺失时封面为 null，不传空字符串给图片加载器。
   - 保留查询优先级：关键词、语言标签、普通标签、全局排序、首页；不新增过滤能力或更改已保存的标签 key。
-  - 语言和普通标签地址使用 `?page=页码&sort=排序值`；默认排序省略 sort，排序值沿用现有映射。关键词和全局排序继续使用已验证的搜索入口。
+  - 语言地址继续使用 `/language/{language}/`。普通筛选 key `tag:{id}` 保持不变，但其 ID 可能属于角色、作者等分类，不能用显示名称统一猜测 `/tag/` 路径；先在操作域名快照下请求 `/api/v2/tags/ids?ids={id}`，校验唯一响应的 ID，使用站点提供的同源分类路径。通过 HttpUrl 添加 page 和 sort；默认排序省略 sort。关键词、语言优先级和全局排序入口保持原行为。
+  - 标签元数据 HTTP/网络错误直接传播；无效 ID、空/不匹配响应、损坏 JSON 或非本站分类路径报含 NH、tag ID 和字段的 ParseException，不回退名称拼接，不吞错误。复用响应关闭、取消检查与显式 Referer 的既有约束；本次不引入标签缓存或自动重试。
   - 保留作品 ID、标题、来源、公共链接和现有语言提取行为。主站/API 请求使用配置中的 domain。
 
 <!-- gantry:step id=gty-nh-detail author=ai status=accept -->
@@ -1329,6 +1330,20 @@ internal class NhentaiCdnCache(private val nanoTime: () -> Long = System::nanoTi
 - 产物绑定：NhentaiParser.kt Git blob 为 07b75f8c4a1bb2fb70ee79a42ef6431dcdfb9140。JVM JAR SHA-256 为 138327cff76e3b41cf7131cad40d7c4cfd60729f53554965a71c6cde6a3325d7；DEX 插件 JAR SHA-256 为 003d550d25883a5a8db4c8d7eee87c9901e9791098bfc763782456ca051fd6f9。构建/缓存/日志/产物保留在 D 盘既有目录，不提交 Git；插件加载仍待用户环境验证。
 
 ## 验收发布记录（2026-10-06）
+
+### 1.0.136 验收反馈与标签路由修正
+
+- 用户反馈“标签筛选失败，其余正常”，截图为 `/tag/abigail-williams/?page=1&sort=popular` 返回 404；保留其余项目整体验收反馈，不补造逐项设备日志，REQ-002 暂不整体通过或合并。
+- 当前源码将静态筛选表全部注册为 `tag:{id}`，取显示名替换空格后统一访问 `/tag/`。公开 API 对 ID 80930 返回 type=character、url=/character/abigail-williams/；对应 tag 分类查询 404、character 分类查询 200，126586（aether）亦为 character。根因为插件丢失分类后猜测路径；电脑网页请求被 Cloudflare 403 阻断，不能将其作为手机 404 的直接复现。
+- 用户在上述根因和“保留 key、使用站点真实路径、补角色和排序分页回归”的修复建议后回复“确认”。复用原任务实施与验收发布授权，只修正既有 REQ-002 标签能力，不重开其余需求/方案；第 1 项同步补齐修正。源码/测试仅涉及 NH，宿主、共享契约和其他来源不变。
+- 定向交接复核：从已保存 `tag:{id}` 到元数据身份校验、同源分类 URL、page/sort、HTML 卡片映射的调用链闭合；设置切域时两个请求均使用原快照和 Referer。未产生新产品选择；不缓存与不重试保持窄范围实现，元数据失败不伪装为空列表。先补公开 getListPage 回归取得有效 RED，再修正并定向验证。
+- 实施与 RED/GREEN：新增六个离线测试，在原源码上原 13 个通过、新 6 个失败；真实筛选 key tag:80930 的用例因错误 /tag/ 路径触发 NotFoundException。修正后 NhentaiParserTest 19/19、NhentaiCdnCacheTest 5/5、JmComicTest 37/37，共 61/61 通过；compileKotlin 和 jar 成功。本次新增显式线上角色筛选用例，原首页和详情/图片用例保留。
+- 实际命令：Windows gradlew.bat test --tests org.skepsun.kototoro.parsers.site.all.NhentaiParserTest --tests org.skepsun.kototoro.parsers.site.all.NhentaiCdnCacheTest --tests org.skepsun.kototoro.parsers.site.zh.JmComicTest compileKotlin jar --no-daemon -Dorg.gradle.jvmargs="-Xmx1g -XX:MaxMetaspaceSize=512m" --max-workers=2；该轮 NHENTAI_INTEGRATION_TEST=0。随后仅显式启用 NHENTAI_INTEGRATION_TEST=1 运行 NhentaiParserIntegrationTest 的 anonymous character filter loads sorted first and second pages。
+- 线上边界：该新增线上用例实际完成 ID 查询并请求 /character/abigail-williams/?page=1&sort=popular，随后返回 Forbidden: Just a moment、403；因此 1 个线上用例失败/受阻，第 2 页与封面检查未到达，不能称线上通过。独立公开元数据查询 HTTP 200 与 character 分类一致。此前详情/正文及用户“其余正常”证据保留，不重复无关线上验证。
+- 审查：以 4bde2047 为比较基线覆盖生产、测试和任务记录完整差异，核对 ID/路径信任边界、旧 key、所有分类/排序、查询与语言优先级、域名快照、显式 Referer、取消与响应释放；无未处理可行动缺陷。Serena 当前符号读取成功；getListPage 引用查询为空，GitNexus 索引落后且未给出受影响流程，均不视作宿主无调用的证明；未改共享签名或宿主。
+- 新产物：D8 9.3.16、JDK 21、--release --min-api 21 及既有七个 classpath JAR 完成打包，退出 0、build/nh-d8.log 长度 0。NH 源码 blob=9bc7af17ddf6a704c4be60b523391d66342cdbe0；JVM JAR SHA-256=af062f291d240790e20c6c29f18c1b7e061013eb7875256249fa8181784addb7；DEX 插件 SHA-256=b0d0292a25241724d465d6245faaa6a9b250828e9bf57a88c35e4c285c0a09cb。ZIP 完整性、classes.dex 及新增 tags/ids 路由符号检查通过；插件替换原本地固定文件名，产物只进入发布分支。
+
+### 1.0.136 发布证据（历史）
 
 - 授权：用户明确要求从发布阶段接续，复用根因、方案及实施确认；项目 AGENTS 的新发布规则及本次消息覆盖历史记录中的不推送/发布限制。未授权强推或用户验收前合并主线。
 - 身份核对：接续 HEAD 为 07f423651e2f5e10325dc69894af68d7c3b1dc42，工作区干净；638fe1bc 之后仅文档变化。当前 NH Git blob、JVM JAR 和 DEX 插件 SHA-256 均与上述绑定相同。现存 XML 报告为 NH 离线 18/18、JM 37/37、线上 2/3，D8 日志为空；复用编译、打包及完整差异审查证据，不重建、不重跑测试，不称全部测试通过。
