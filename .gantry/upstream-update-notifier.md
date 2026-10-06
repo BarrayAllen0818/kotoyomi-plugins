@@ -2,11 +2,11 @@
 
 **Target:** 实现 PRD.md REQ-004：每天北京时间 06:00 检查个人远端 master 是否包含上游提交，未全部包含则每天提醒；用户说“检查上游更新”时由 Codex 读取固定入口。
 
-<!-- gantry:workflow pseudocode=pending annotations=pending stabilization=pending implementation=pending -->
+<!-- gantry:workflow pseudocode=approved annotations=complete stabilization=complete implementation=pending -->
 
 ## 当前状态与事实
 
-用户已确认需求阶段完成并进入方案阶段，随后明确选 B，以当前已拉取的 ca313756e395b5ddbd201e01cc01ece01078d15c 为初始基线。“已拉取”指上游提交已合并并推送到个人远端、保留原提交历史；未完成则每天提醒。这些需求已确认，修订后的技术方案仍待整体审阅，无实现授权。
+用户已确认需求阶段完成并进入方案阶段，随后明确选 B，以当前已拉取的 ca313756e395b5ddbd201e01cc01ece01078d15c 为初始基线。“已拉取”指上游提交已合并并推送到个人远端、保留原提交历史；未完成则每天提醒。2026-10-06 用户在收到四步运作解释、范围及验证说明后批准当前整体方案。六项 AI 步骤已接受，注解与稳定性复核完成，无新待决项；实现授权仍待单独取得。
 
 沿用 codex/upstream-update-notifier，任务代码基线 ce6231862a9a6eb4b5f9b081b2a55c8527cbb60b。Gantry guided、聊天审阅，不启动浏览器。行为、数据归属和失败边界是设计约束；私有函数划分与测试接线是可调整建议。
 
@@ -24,7 +24,7 @@
 
 ## Pseudocode
 
-<!-- gantry:step id=gty-upstream-entry author=ai status=open -->
+<!-- gantry:step id=gty-upstream-entry author=ai status=accept -->
 1. 固定两个远端 master，记录初始已同步基线，创建一个提醒 Issue。
   - 上游为 skepsun/kototoro-parsers/master，接收方为 BarrayAllen0818/kotoyomi-plugins/master。只判断接收方 master 的祖先，不因任务分支、repo 发布分支或孤立对象存在就视为完成。
   - 固定初始 B=ca313756e395b5ddbd201e01cc01ece01078d15c。初始化核对 B 被两个远端历史包含；失败报告，不静默改成部署时 HEAD。B 是初始化证据，不是移动水位，运行时不能用它隐藏远端回退造成的缺失。
@@ -39,14 +39,14 @@
 - [x] **edge:** [accept] 上游原提交合并并推送到个人远端 master 后才停止提醒；否则即使昨天已通知，今天仍提醒。
   - comment: 用户明确“上游提交合并并推送到远端，远端有上游提交记录”；仅 fetch、本地合并、未 push 或仅其他分支包含均不满足条件。
 
-<!-- gantry:step id=gty-upstream-schedule author=ai status=open -->
+<!-- gantry:step id=gty-upstream-schedule author=ai status=accept -->
 2. GitHub 托管 ubuntu-latest 每天北京时间 06:00 执行独立工作流。
   - UTC cron 为 0 22 * * *，另提供无任意输入的 workflow_dispatch；限制为固定目标仓库，不增加 pull_request 写通知触发器。
   - GITHUB_TOKEN 仅 contents:read、issues:write；公开上游 Git 获取无需 PAT。固定网络地址，不执行远端提交、Issue 或日志内的指令。
   - 固定 concurrency group，cancel-in-progress=false，定时和手动运行串行；job 限时 10 分钟。checkout 使用既有固定 SHA、persist-credentials=false，仅加载受信任脚本和测试。
   - 正式检查前运行自身离线测试。Python 标准库与 Git 足够；写模式只在 Actions 使用，本机默认只读，无 Gradle/D8/发布调用。
 
-<!-- gantry:step id=gty-upstream-check author=ai status=open -->
+<!-- gantry:step id=gty-upstream-check author=ai status=accept -->
 3. 每次从两个远端取得完整历史快照，以提交可达性计算未合入集合。
   - 在 runner 临时目录新建独立 bare Git 仓库，分别从固定 HTTPS URL fetch 两条 master 到不同 refs，使用 --no-tags、不使用 depth/shallow；不修改 checkout 分支，不 push。finally 仅清理本次创建并校验过的临时目录。
   - 两次 fetch 成功后记录 O=个人 master SHA、U=上游 master SHA；只对固定 SHA 计算。核对 Git 返回码、对象完整性和共同祖先；不完整、超时或无共同历史均 error，不能降级为已同步。
@@ -56,7 +56,7 @@
   - 发送前 ls-remote 复核两端 master 仍为 O/U；变化则重新获取和计算一次，仍变化则 snapshot_changed 失败退出。消息表明“截至检查时间”的快照，不承诺消除发送瞬间的竞态。
   - 标题仅作数据：单行、限长、转义 Markdown、中和 @提及。链接使用固定仓库与完整 SHA，不依赖跨 fork compare URL。
 
-<!-- gantry:step id=gty-upstream-persist author=ai status=open -->
+<!-- gantry:step id=gty-upstream-persist author=ai status=accept -->
 4. pending 时每天追加一条提醒，同日重试去重不影响次日。
   - 以检查时刻的 Asia/Shanghai 日期分组，不用提交日期；跨午夜则写入前刷新日期。去重键为仓库、监控分支对、YYYY-MM-DD，不能只用 U 或上次通知 SHA。
   - 分页读取固定 Issue 的评论，只识别 github-actions[bot] 的预期 schema 标记。当日已有有效提醒则 daily_reminder_exists，仍报告本次 O/U/P；当日出现更多提交也不追加第二条，日志显示新差集。次日仍 pending 必须再次提醒。
@@ -65,14 +65,14 @@
   - synced 不发提醒、不关 Issue、不删旧评论。日志和 Step Summary 写 status=synced/pending/error、检查时间、O/U、pending_count、通知结果及链接；是否同步只由 Git 图决定，与今日是否已通知无关。
   - Git、API、鉴权、Issue 或消息错误令工作流失败，不报告已同步。GitHub Actions 自身通知用于失败提示；是否发邮件由用户订阅设置决定。
 
-<!-- gantry:step id=gty-upstream-manual author=ai status=open -->
+<!-- gantry:step id=gty-upstream-manual author=ai status=accept -->
 5. Codex 收到“检查上游更新”后通过默认只读入口报告最近检查。
   - Brain 记录 python .github/scripts/check_upstream.py --status；使用既有 gh 登录或 GH_TOKEN，只读 Issue 和默认分支的 check-upstream.yml 运行信息，通过 gh run view --log 解析结构化结果。不发评论、不 dispatch、不 fetch 到用户仓库、不合并推送、不输出凭据。
   - 报告最近检查时间、当时 O/U、pending_count、运行结论、提醒链接。最新失败、排队、取消、从未运行及超过 30 小时无成功检查分别说明，旧成功不能覆盖新失败。
   - synced 时旧评论仅属历史；pending 且当日已通知仍报告待合入。日志缺失时同步状态/数量标为未知，不从最后提醒推断现在是否已合并。
   - 明确是“截至最近一次检查”的结果，不声称实时检查调用当刻的远端；缺少 gh/凭据/API 权限如实报告。不加任务启动检查、Codex 自动化或 AGENTS 规则。
 
-<!-- gantry:step id=gty-upstream-deploy author=ai status=open -->
+<!-- gantry:step id=gty-upstream-deploy author=ai status=accept -->
 6. 本地验证及审阅验收后部署，配置完成与真实运行分别报告。
   - 先实现 Git 差集与隔离回归，再接每日通知/去重和只读查询，最后接工作流；完成验证、审查、阶段提交和任务分支推送，不发布插件。
   - 在相应实施/外部写入授权覆盖后创建固定 Issue、绑定真实编号和 B、更新 Brain 入口；创建成功后其他步骤失败则复用原编号。初始 B 校验失败不擅自换基线。
@@ -108,7 +108,11 @@
 - fork=false 使跨 fork compare 不宜作为核心机制；采用隔离 bare 完整 fetch，避免浅历史/分页误判。本轮当前本地完整图与远端 SHA 对照证明 P=0；runner 获取、耗时及权限待授权实施验证。
 - 固定 B 是初始已同步记录，不能隐藏远端回退；同日去重、隔日持续提醒分别覆盖。补齐只 fetch、merge 未 push、仅其他分支、部分合并、squash、午夜和快照变化边界。
 - 手动查询区分历史评论与最近检查，旧提醒不能代表现状；日志不可得明确未知。默认分支生效、Actions 启用连带影响及仅提醒边界保留。
-- 本次针对修订链路自查无新产品选项；用户明确的 B 和合入定义已记为接受，六项 AI 技术步骤仍 open。真实权限、Git 网络耗时、POST 与用户订阅须在授权部署验证；不可擅自降级为浅历史或扩大凭据权限。
+- 2026-10-06 整体方案获批后，注解审阅和稳定性复核覆盖初始化 B、远端差集、每日去重、网络不确定结果、只读状态以及部署顺序，未发现新增实质决策；六项 AI 技术步骤均 accept，B 和合入定义沿用已确认记录。真实权限、Git 网络耗时、POST 与用户订阅须在授权部署验证；不可擅自降级为浅历史或扩大凭据权限。
+
+## 批准与稳定性记录
+
+2026-10-06 用户针对完整方案解释回复“确认”。接受第 1–6 步整体，不等同于单独的实现授权。复核结论：同一未合入集合隔日持续提醒、同日只一条；仅接收方远端 master 的可达性可消除待合入项；错误和历史消息都不能覆盖新检查事实；上线合并仍须实现交付后用户验收。六条执行链与验证矩阵一致，无新增注解或正文行为变更。runner 网络、GITHUB_TOKEN 写入和实际通知仍为实施阶段验证项，不宣称已通过。
 
 ## Code
 

@@ -5,7 +5,7 @@ category: decision
 status: active
 tags: [upstream, notifications]
 created: "2026-10-06T14:57:12"
-updated: "2026-10-06T15:16:05"
+updated: "2026-10-06T15:24:39"
 ---
 
 <!-- compiled_truth -->
@@ -27,7 +27,7 @@ GitHub 托管 Actions 每天北京时间 06:00 检查 skepsun/kototoro-parsers/m
 
 需求为 PRD.md REQ-004，方案为 .gantry/upstream-update-notifier.md。目标仓库：https://github.com/BarrayAllen0818/kotoyomi-plugins 。工作流、脚本和提醒 Issue 尚未建立，不能声称有可用入口；实现后在此补齐准确 Issue URL、工作流和命令。
 
-2026-10-06 当前 API 核实 Actions enabled=false，仍未启用。方案已按远端合入语义修订，整体技术方案及实现授权尚未取得。此时个人远端 master=260a9c36c437506309c867faf4eab009cec6d24b，包含上游 ca313756，无待合入项；该结果是当时快照，后续查询需获取当前证据。
+2026-10-06 当前 API 核实 Actions enabled=false，仍未启用。方案已按远端合入语义修订；用户在完整方案解释后确认整体技术方案，注解与稳定性复核完成，无新增待决项。独立实现授权尚未取得。此时个人远端 master=260a9c36c437506309c867faf4eab009cec6d24b，包含上游 ca313756，无待合入项；该结果是当时快照，后续查询需获取当前证据。
 
 
 ## Timeline
@@ -60,4 +60,10 @@ GitHub 托管 Actions 每天北京时间 06:00 检查 skepsun/kototoro-parsers/m
   kind: reversal
   summary: "撤销旧的相同更新不重复提醒规则：跨日持续提醒，完成以个人远端 master 包含原始上游提交为准；初始 A 改为指定 ca313756 的 B"
   source: "2026-10-06 用户连续澄清"
+  affects: [upstream-update-notifications]
+
+- time: 2026-10-06T15:24:39
+  kind: decision
+  summary: "用户批准整体方案，完成注解与稳定性复核，等待独立实现授权"
+  source: "2026-10-06 完整方案解释后用户回复：确认"
   affects: [upstream-update-notifications]
