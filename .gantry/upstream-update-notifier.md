@@ -1,120 +1,114 @@
-# 上游更新提醒与手动查询
+# 上游未合入提交提醒与手动查询
 
-**Target:** 实现 PRD.md REQ-004：GitHub Actions 每天北京时间 06:00 检查上游 master，仅提醒；用户说“检查上游更新”时，Codex 根据项目 Brain 读取固定入口。
+**Target:** 实现 PRD.md REQ-004：每天北京时间 06:00 检查个人远端 master 是否包含上游提交，未全部包含则每天提醒；用户说“检查上游更新”时由 Codex 读取固定入口。
 
 <!-- gantry:workflow pseudocode=pending annotations=pending stabilization=pending implementation=pending -->
 
-## 当前状态
+## 当前状态与事实
 
-2026-10-06 用户确认需求内容、需求阶段完成及进入方案阶段。以下方案由 AI 起草，尚未批准，尚无实现授权。沿用 `codex/upstream-update-notifier`；基线 `ce6231862a9a6eb4b5f9b081b2a55c8527cbb60b`。本轮仅写文档，不启用 Actions、创建 Issue、发布提醒或合并主线。
+用户已确认需求阶段完成并进入方案阶段，随后明确选 B，以当前已拉取的 ca313756e395b5ddbd201e01cc01ece01078d15c 为初始基线。“已拉取”指上游提交已合并并推送到个人远端、保留原提交历史；未完成则每天提醒。这些需求已确认，修订后的技术方案仍待整体审阅，无实现授权。
 
-采用 Gantry guided 与聊天审阅，不启动浏览器。Pseudocode 规定行为、状态归属、失败边界及上线顺序；私有函数命名、同义数据结构与测试组织属于实现建议，可在不改变上述约束时调整。
+沿用 codex/upstream-update-notifier，任务代码基线 ce6231862a9a6eb4b5f9b081b2a55c8527cbb60b。Gantry guided、聊天审阅，不启动浏览器。行为、数据归属和失败边界是设计约束；私有函数划分与测试接线是可调整建议。
 
-## 已核实的事实与影响
+- 2026-10-06 API 核实目标仓库 BarrayAllen0818/kotoyomi-plugins 为 public、fork=false，默认分支 master，Issues 可用，账号有 admin/push 权限；Actions enabled=false。方案不依赖 GitHub 跨 fork compare。
+- 当前个人远端 master=260a9c36c437506309c867faf4eab009cec6d24b，与本地 master 相同；上游远端 master 与本地 upstream/master 均为 ca313756e395b5ddbd201e01cc01ece01078d15c。本地完整图证明该 SHA 是 master 祖先，git rev-list --count upstream/master --not master 为 0。本轮未 fetch。
+- release.yml 仅 workflow_dispatch；test-branch.yml 在 master push 编译，test-parsers.yml 对解析器 PR/手动运行编译，test-release.yml 对 scripts 目录及发布 YAML 变化运行发布逻辑离线测试。全部保留；提醒不调用发布。
+- GitHub schedule 只运行默认分支，可延迟或漏调度；公共仓库 60 天无活动可能停用。仅推送任务分支不能宣称定时生效。参考：https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows 。
+- Serena 已核对可用且绑定本仓库；GitNexus 可用但索引落后起草时基线 14 个提交。本轮依据当前 YAML、Git 图和 API，不依赖旧图谱，不需要修改 Kotlin 或重新索引。
 
-- 2026-10-06 GitHub API：目标仓库 `BarrayAllen0818/kotoyomi-plugins` 为公开仓库，默认分支 `master`，Issues 可用，当前账号具有 admin/push 权限，仓库 Actions `enabled=false`。尚无提醒 Issue。
-- 上游 `skepsun/kototoro-parsers` 的 `master` 当前指向 `ca313756e395b5ddbd201e01cc01ece01078d15c`。此 SHA 是本轮观测值，不能直接当作未来部署时的最新基线。
-- `.github/workflows/release.yml` 仅 `workflow_dispatch`，与发布脚本相连；提醒流程不调用它。`.github/workflows/test-branch.yml` 在 master push 时编译；`test-parsers.yml` 对解析器 PR/手动运行编译；`test-release.yml` 对脚本目录与发布 YAML 的变动运行发布脚本测试。
-- 新提醒工作流独立新增，保留全部现有工作流。启用仓库 Actions 后，未来匹配事件会恢复现有检查；本次上线先在 Actions 禁用状态下合并推送，再启用并手动运行提醒，不为本任务触发 Gradle 或插件发布。
-- GitHub 官方规则：schedule 只运行默认分支上的工作流，可延迟或漏调度；公共仓库连续 60 天无活动可能停用。上线不能只推送任务分支便宣称每日检查生效；手动查询必须检查运行是否过期。
-- Serena 可用且项目为本仓库；GitNexus 可用但索引停在 `f9965c74`，落后当前任务基线 14 个提交。本轮根据当前工作流原文和 GitHub API 核对影响，未使用旧图谱推断调用链，也未重新索引。无需读取或修改 Kotlin 解析器。
+## 修改入口与兼容边界
 
-参考：[GitHub 工作流触发规则](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)。
+新增 .github/workflows/check-upstream.yml、.github/scripts/check_upstream.py、.github/scripts/test_check_upstream.py。分别负责调度、Git 差集/通知/只读查询、隔离离线验证。经 brain CLI 更新 upstream-update-notifications 页面与自动索引；PRD 和本方案记录批准、验证与交付。
 
-## 修改入口
-
-| 文件 | 计划职责 |
-| --- | --- |
-| `.github/workflows/check-upstream.yml`（新增） | 定时与手动执行检查、固定仓库限制、权限及并发控制 |
-| `.github/scripts/check_upstream.py`（新增） | GitHub API 读取、检查点解析、比较与提醒；只读查询模式 |
-| `.github/scripts/test_check_upstream.py`（新增） | 隔离 API 响应的确定性状态与失败回归测试，不连接 GitHub |
-| `brain/pages/upstream-update-notifications.md` 与自动索引 | 经 brain CLI 更新准确 Issue URL、工作流名称、手动查询命令与失败解释 |
-| `PRD.md`、本方案及差异记录 | 记录批准、实际验证、上线及用户验收证据 |
-
-不改 AGENTS、现有源码、发布脚本或插件索引；不新增依赖。个人逻辑集中在新脚本及新工作流，后续上游同步保留这些文件和 Brain 入口。没有共享解析契约变化；现有 `test-release.yml` 对 scripts 目录的宽匹配会额外触发发布逻辑的离线测试，这是检查，不是发布。
+不改 AGENTS、解析器、宿主契约、既有发布脚本或插件索引，不新增依赖。个人逻辑集中在新文件，后续上游同步保留它们和 Brain 入口。scripts 变更会匹配现有 test-release 离线测试，这是检查而非发布。
 
 ## Pseudocode
 
 <!-- gantry:step id=gty-upstream-entry author=ai status=open -->
-1. 使用一个固定 Issue 作为提醒历史和检查点的唯一持久记录。
-  - 部署时由当前账号创建标题为 `[上游更新] kototoro-parsers/master` 的 Issue，正文说明用途并包含 schema=1 的机器标记：上游仓库、分支、初始完整 SHA、初始化时间。该次创建是一次初始化通知，不描述为已有新更新。
-  - 将返回的 Issue 编号写入脚本的唯一配置常量，与固定目标仓库、上游仓库和分支放在一起；工作流和本地查询均调用该脚本，避免两处编号漂移。经 brain CLI 把准确 URL、编号及入口命令写入项目 Brain；不在每次运行时搜索同名 Issue，不依赖会过期的 cache/artifact 或易变分支保存状态。
-  - Issue 正文中的初始 SHA 是根检查点；后续有效机器人评论同时承担通知和新检查点，正常运行不修改正文。用户关闭 Issue 不抹去历史，也不表示已合并；检查仍读取同一编号并可继续评论，不自动重开。Issue 删除、锁定或状态损坏时明确失败，不静默创建替代品。
-
-<!-- gantry:item id=gty-upstream-initial type=edge status=open mode=choice -->
-- [ ] **edge:** 首次启用从哪里开始提醒？推荐 A，符合持续监控后续更新的目标，避免将全部旧提交一次性报出。
-  - A: 以部署时上游最新 SHA 建立基线，仅提醒之后的更新。
-  - B: 用户指定一个上游起始 SHA，首次运行补报该提交之后的变化。
+1. 固定两个远端 master，记录初始已同步基线，创建一个提醒 Issue。
+  - 上游为 skepsun/kototoro-parsers/master，接收方为 BarrayAllen0818/kotoyomi-plugins/master。只判断接收方 master 的祖先，不因任务分支、repo 发布分支或孤立对象存在就视为完成。
+  - 固定初始 B=ca313756e395b5ddbd201e01cc01ece01078d15c。初始化核对 B 被两个远端历史包含；失败报告，不静默改成部署时 HEAD。B 是初始化证据，不是移动水位，运行时不能用它隐藏远端回退造成的缺失。
+  - 部署时创建标题为 [上游更新] kototoro-parsers/master 的 Issue，正文说明初始化时间、B、监控分支和持续提醒规则。Issue 仅保存提醒历史与同日去重记录，不是同步状态的事实源。
+  - 编号是脚本唯一配置，工作流与本地查询共用，brain CLI 写入准确 URL 和命令。关闭 Issue 不表示已同步，不自动重开、不删历史；仍可按规则评论。删除、锁定或无法访问则明确失败。
+<!-- gantry:item id=gty-upstream-initial type=edge status=choice-b mode=choice -->
+- [x] **edge:** [choice-b] 初始基线固定为本次已拉取的 ca313756e395b5ddbd201e01cc01ece01078d15c，不取未来首次执行时最新提交。
+  - A: 以部署时最新 SHA 建立基线，仅提醒后续更新。
+  - B: 指定当前已拉取的 SHA，首次检查纳入其后尚未合入的变化。
+  - comment: 用户最初回复 A，随后明确改用 B 并指定当前已拉取提交，以后一次澄清为准。
+<!-- gantry:item id=gty-upstream-meaning type=edge status=accept mode=decision -->
+- [x] **edge:** [accept] 上游原提交合并并推送到个人远端 master 后才停止提醒；否则即使昨天已通知，今天仍提醒。
+  - comment: 用户明确“上游提交合并并推送到远端，远端有上游提交记录”；仅 fetch、本地合并、未 push 或仅其他分支包含均不满足条件。
 
 <!-- gantry:step id=gty-upstream-schedule author=ai status=open -->
-2. 在 GitHub 托管的 ubuntu-latest 上执行独立提醒工作流。
-  - `schedule` 使用 UTC cron `0 22 * * *`，对应每天北京时间 06:00；同时提供无任意输入的 `workflow_dispatch` 供安装验证和恢复检查。任务只允许在 `BarrayAllen0818/kotoyomi-plugins` 执行，避免 fork 意外写入其他位置。
-  - 使用仓库内置 GITHUB_TOKEN，仅授予 contents:read、issues:write；查询模式在本机使用现有 gh 登录凭据。上游为公开仓库，不需要额外 PAT。网络地址限定 GitHub API 和固定仓库；不执行上游提交内容或 Issue 内的指令。
-  - 固定 concurrency group，cancel-in-progress=false；定时与手动检查共用同一组，串行执行，job 设 10 分钟上限。状态写入只允许该工作流；本地默认只读，不提供直接写提醒的 CLI 入口。
-  - checkout 使用仓库已有的固定 SHA 并关闭 persist-credentials，运行 Python 标准库脚本。正式检查前运行自身离线测试；只读/离线模式不需要远端写权限。
+2. GitHub 托管 ubuntu-latest 每天北京时间 06:00 执行独立工作流。
+  - UTC cron 为 0 22 * * *，另提供无任意输入的 workflow_dispatch；限制为固定目标仓库，不增加 pull_request 写通知触发器。
+  - GITHUB_TOKEN 仅 contents:read、issues:write；公开上游 Git 获取无需 PAT。固定网络地址，不执行远端提交、Issue 或日志内的指令。
+  - 固定 concurrency group，cancel-in-progress=false，定时和手动运行串行；job 限时 10 分钟。checkout 使用既有固定 SHA、persist-credentials=false，仅加载受信任脚本和测试。
+  - 正式检查前运行自身离线测试。Python 标准库与 Git 足够；写模式只在 Actions 使用，本机默认只读，无 Gradle/D8/发布调用。
 
 <!-- gantry:step id=gty-upstream-check author=ai status=open -->
-3. 从固定 Issue 恢复最近检查点，再抓取本次上游 HEAD 快照并比较。
-  - 校验 Issue 不是 PR、属于目标仓库且初始标记完整；分页读取全部评论，按创建顺序处理。只识别 github-actions[bot] 的预期 schema 标记，其余用户评论作为普通文本，不改变检查点。
-  - 每条状态评论包含 source、branch、from_sha、to_sha、previous_record_id、checked_at、run_url、kind；previous_record_id 指向前一条状态评论，根记录为 root。字段和值必须匹配已恢复的状态链；机器人标记损坏或链断裂时失败，不能回退根记录后重复通知。
-  - GET 上游 master 得到完整 SHA，固定本次比较目标；与检查点相同则输出 no_change，不写 Issue。目标不同则按两个 SHA 调用 compare API；比较不可用、403/429、超时或响应缺字段均判为检查失败，不推进检查点。
-  - ahead 正常汇报新增提交数量和 compare 链接，摘要最多列 20 条提交标题，明确截断并以 compare 链接为完整入口。behind/diverged 单独说明上游历史回退或改写及关系，不把它们冒充正常新增；成功记录这一变化后采用新 HEAD 继续监控。
-  - 提交摘要仅作为数据：限制长度、转为单行、转义 Markdown 并中和 @提及，避免标题意外通知第三方；链接从已验证仓库与 SHA 生成。
+3. 每次从两个远端取得完整历史快照，以提交可达性计算未合入集合。
+  - 在 runner 临时目录新建独立 bare Git 仓库，分别从固定 HTTPS URL fetch 两条 master 到不同 refs，使用 --no-tags、不使用 depth/shallow；不修改 checkout 分支，不 push。finally 仅清理本次创建并校验过的临时目录。
+  - 两次 fetch 成功后记录 O=个人 master SHA、U=上游 master SHA；只对固定 SHA 计算。核对 Git 返回码、对象完整性和共同祖先；不完整、超时或无共同历史均 error，不能降级为已同步。
+  - P=git rev-list U --not O；空集才是 synced，非空就是 pending。数量取全部差集，消息最多展示 20 条提交标题并标明截断。U 与昨天相同但 P 不为空，仍每天提醒。
+  - O 有额外个人提交但包含 U 仍 synced；部分合并只列剩余。squash/cherry-pick 若不保留原提交可达性则仍 pending，不用内容相同、patch-id 或标题相似替代历史包含。
+  - 历史回退/改写但仍有共同祖先时按当前 P 判断，B 不再被包含则附历史变动说明；无共同历史明确失败，不把整仓差异冒充正常更新。
+  - 发送前 ls-remote 复核两端 master 仍为 O/U；变化则重新获取和计算一次，仍变化则 snapshot_changed 失败退出。消息表明“截至检查时间”的快照，不承诺消除发送瞬间的竞态。
+  - 标题仅作数据：单行、限长、转义 Markdown、中和 @提及。链接使用固定仓库与完整 SHA，不依赖跨 fork compare URL。
 
 <!-- gantry:step id=gty-upstream-persist author=ai status=open -->
-4. 每次 HEAD 变化只追加一条评论，将提醒和检查点一起保存。
-  - 评论正文是中文可读摘要、检查时间和链接；尾部机器标记与正文在同一次 POST 中提交。不给正文或另一分支再写单独的 last_seen，避免“状态已前进、提醒未送出”。
-  - 去重键由 previous_record_id 和目标 SHA 组成，并校验 from_sha。POST 前再次读取最新状态；若状态已变，终止本次写入并报告需要重新检查，不使用旧快照发提醒。同一源分支的所有写入受第 2 步串行组约束。
-  - POST 失败或超时不立即重发：只读回查是否已有相同去重键的有效评论。找到则记录已保存及评论 URL；无法确认则失败，保留不确定状态供下次运行恢复。下次运行先读远端链，已保存评论不会再次发送。不得声称跨网络故障提供严格的 exactly-once 保证。
-  - 运行日志及 Step Summary 输出 schema、status（no_change/notified/error）、检查时间、baseline/head、Issue URL，成功提醒另附 comment URL。通知已保存但后续输出失败时分别记录，不能撤销评论或重发。
-  - 错误使工作流失败，保留最后成功的检查点；不以无更新掩盖失败。失败提醒使用 GitHub 自身 Actions 通知，是否发邮件取决于用户订阅设置，不另开错误 Issue。
+4. pending 时每天追加一条提醒，同日重试去重不影响次日。
+  - 以检查时刻的 Asia/Shanghai 日期分组，不用提交日期；跨午夜则写入前刷新日期。去重键为仓库、监控分支对、YYYY-MM-DD，不能只用 U 或上次通知 SHA。
+  - 分页读取固定 Issue 的评论，只识别 github-actions[bot] 的预期 schema 标记。当日已有有效提醒则 daily_reminder_exists，仍报告本次 O/U/P；当日出现更多提交也不追加第二条，日志显示新差集。次日仍 pending 必须再次提醒。
+  - 评论包含仍未合并推送的数量、时间、O/U 链接、最多 20 条缺失提交链接。尾部机器标记包含 schema、day、source/target、origin_sha、upstream_sha、pending_count、checked_at、run_url，与消息一次 POST。
+  - POST 失败/超时不盲目重发，只读回查同日键；找到则报告已保存，无法确认则 error，保留不确定事实供重跑核对。普通用户标记不参与去重；预期机器人标记损坏则失败。所有写入共用串行组，不宣称严格跨网络 exactly-once。
+  - synced 不发提醒、不关 Issue、不删旧评论。日志和 Step Summary 写 status=synced/pending/error、检查时间、O/U、pending_count、通知结果及链接；是否同步只由 Git 图决定，与今日是否已通知无关。
+  - Git、API、鉴权、Issue 或消息错误令工作流失败，不报告已同步。GitHub Actions 自身通知用于失败提示；是否发邮件由用户订阅设置决定。
 
 <!-- gantry:step id=gty-upstream-manual author=ai status=open -->
-5. 提供默认只读入口，供 Codex 收到口令后查询。
-  - Brain 记录 `python .github/scripts/check_upstream.py --status`；该模式使用现有 gh 登录（或已提供的 GH_TOKEN），只发 GET，请求固定 Issue、分页评论以及 check-upstream.yml 最近运行，绝不发通知、不触发工作流、不合并代码。缺少登录/配置时返回明确错误，不输出凭据。
-  - 最近运行限定当前仓库默认分支上的该工作流；详情通过 gh run view --log 只读取得并解析第 4 步的结构化结果，不把普通提交文本或评论当日志状态。gh 不可用、日志尚未生成或已过期时，保留 API 已知状态并明确缺少详情；最近成功运行时间与脚本实际检查时间分别标注。
-  - 报告最近运行的时间与 conclusion、最近成功检查时间（若可取得）、最近已记录 HEAD 及提醒摘要/链接。最新执行失败、排队、取消或未运行都单列；超过 30 小时没有成功检查标记为“检查状态过期”。最近成功不覆盖较新的失败状态。
-  - 明确这是“截至最近一次成功检查的提醒”，不是手动查询当刻重新检查上游。即便 no_change，之前记录的提醒仍列出；不推断用户已经阅读或将变更合入本地。
-  - 入口尚未部署、Issue 缺失、API 不可用或最新日志无法取得时报告具体未知项。若最新运行成功但只能读到记录的 HEAD，说明日志详情未取得，不捏造新增数量或最近查询到的实时 HEAD。
-  - 不加项目启动检查、Codex 自动化或 AGENTS 规则。现有 Brain 启动发现机制只加载页面索引，实际远端查询仍由用户口令触发。
+5. Codex 收到“检查上游更新”后通过默认只读入口报告最近检查。
+  - Brain 记录 python .github/scripts/check_upstream.py --status；使用既有 gh 登录或 GH_TOKEN，只读 Issue 和默认分支的 check-upstream.yml 运行信息，通过 gh run view --log 解析结构化结果。不发评论、不 dispatch、不 fetch 到用户仓库、不合并推送、不输出凭据。
+  - 报告最近检查时间、当时 O/U、pending_count、运行结论、提醒链接。最新失败、排队、取消、从未运行及超过 30 小时无成功检查分别说明，旧成功不能覆盖新失败。
+  - synced 时旧评论仅属历史；pending 且当日已通知仍报告待合入。日志缺失时同步状态/数量标为未知，不从最后提醒推断现在是否已合并。
+  - 明确是“截至最近一次检查”的结果，不声称实时检查调用当刻的远端；缺少 gh/凭据/API 权限如实报告。不加任务启动检查、Codex 自动化或 AGENTS 规则。
 
 <!-- gantry:step id=gty-upstream-deploy author=ai status=open -->
-6. 先本地验证与审阅验收，再上线，并保留真实运行结果。
-  - 实现时先完成脚本和离线测试、工作流静态检查；通过后完成差异审查、阶段提交和任务分支推送。此任务没有插件产物，不执行插件发布流程。
-  - 验收材料包含离线状态/失败证据与完整差异；用户审阅验收后，按 Git 策略 no-ff 合入 master 并推送。默认分支存在工作流是 GitHub 的调度前提，合并之前不宣称定时已生效。
-  - Issue 初始化、真实编号绑定与 Brain 更新在实现部署阶段进行；若创建已成功但后续失败，保留并复用该编号，不反复创建 Issue。首次基线根据已选 A/B 校验；未获得 B 的有效 SHA 时不能猜测或上线。
-  - master 推送时仍保持 Actions 禁用；之后保留仓库其他设置，仅启用 Actions。启用本身不会补跑过去 push，但未来匹配事件将恢复已有编译及离线检查；插件 release 仍为手动触发。
-  - 手动 dispatch 一次真实检查，读取运行结论、日志/摘要、Issue 及 --status 输出；对 A 允许部署到首次运行间出现新提交并产生真实提醒。无真实更新时不人为制造公开测试评论，真实通知路径标记为仅离线验证，等待首次更新验证。
-  - 检查失败按实际证据修正或报告，不能自动合并上游、改写发布分支或换用 PAT 绕过权限问题。线上失败不抹去已合并或已启用的事实。
+6. 本地验证及审阅验收后部署，配置完成与真实运行分别报告。
+  - 先实现 Git 差集与隔离回归，再接每日通知/去重和只读查询，最后接工作流；完成验证、审查、阶段提交和任务分支推送，不发布插件。
+  - 在相应实施/外部写入授权覆盖后创建固定 Issue、绑定真实编号和 B、更新 Brain 入口；创建成功后其他步骤失败则复用原编号。初始 B 校验失败不擅自换基线。
+  - 提供离线证据与完整差异供用户审阅验收；验收后按 Git 策略 no-ff 合入 master 并推送。默认分支未包含工作流前不宣称每日检查已生效。
+  - 当前 Actions 禁用时完成 master 推送，然后只启用 Actions、保留其他设置；未来事件恢复原 CI，release 仍手动触发。dispatch 一次本工作流验证真实 Git 获取、日志、Issue 读取和 --status。
+  - 首次 pending 就真实提醒；synced 则零更新提醒，POST 路径标为仅离线验证，不人为造公开测试消息。次日仍 pending 应再次提醒。
+  - 线上失败保留并报告已合并、启用或发消息的事实，不自动合并上游、不强推、不改发布分支、不新增 PAT 绕过权限。
 
-## 实施顺序与验证矩阵
+## 实施顺序与验证依据
 
-先实现并离线验证读取/状态链，再实现比较/单次评论，再接工作流和只读命令，最后更新准确 Brain 入口并按第 6 步上线。测试采用标准库 unittest 与可注入的 HTTP/时钟，默认不访问网络。可以调整私有函数划分及 mock 接线，不改变状态链、消息边界和默认只读行为。
+使用标准库 unittest、临时本地 bare 仓库、假 API 和可控时钟，默认离线。以实际本地 Git 图验证可达性，不只 mock rev-list；Git 超时、HTTP 失败及时间可注入。私有函数划分可调整，远端 master 判定、隔日持续提醒及默认只读不可变。
 
 | 场景 | 必须观察到的结果 |
 | --- | --- |
-| 有效根记录且 HEAD 相同 | no_change；零写请求 |
-| 正常新增、多页评论、超过 20 条新增 | 恢复真正末检查点；单条评论；摘要截断明确且完整比较链接有效 |
-| 下次重复检查、评论 POST 已成功但响应丢失 | 恢复远端记录；不重复发相同提醒 |
-| HEAD A→B→A | 回退明确标注；previous_record_id 区分历史转换，不因曾见过 A 丢弃当前变化 |
-| 普通用户伪造标记、机器人状态损坏或链断裂 | 普通文本不影响状态；预期机器人标记损坏明确失败；均不静默重置 |
-| 403/429/5xx/超时/compare 缺字段、Issue 锁定或删除 | 非零退出且无检查点推进；查询不报告无更新 |
-| POST 失败且回查也失败 | 状态不确定明确报告；本次不盲目重发 |
-| 两次调度或部署间 HEAD 变化 | concurrency 配置一致；写前状态核对；基于 SHA 快照而非移动分支比较 |
-| 手动 --status、失败新于成功、30 小时过期 | 零写请求；分别显示历史提醒、最近检查与错误/过期状态 |
-| 默认无参数、凭据缺失、--status 日志读取受限 | 默认只读或显示帮助；无凭据泄漏；限制如实报告 |
-| 对比生产与测试工作流 | cron 对应北京时间 06:00；没有 Gradle/发布调用，没有 pull_request 写通知触发器 |
+| O 包含 U 且有额外个人提交 | synced，零更新提醒 |
+| 同一 U 连续两天未包含 | 两天各提醒一次 |
+| 同日重跑、POST 已成功但响应丢失 | 当日去重，仍报告 pending |
+| 本地 fetch/合并未推送，仅其他远端分支包含 | 继续提醒 |
+| 合并推送 master、部分合并、之后回退 | 停止、仅剩余、恢复缺失提醒 |
+| squash/cherry-pick 等价但缺原提交 | pending，不冒称已合入原历史 |
+| 超过 20 条缺失、多页评论 | 数量完整、摘要截断明确、去重不漏页 |
+| 同日 U 再变化、跨北京时间午夜 | 当日只一条；日志新结果；次日可再提醒 |
+| fetch/API 失败、无共同历史、快照持续变动 | error，不据不完整或过时快照通知 |
+| 发送前远端变化 | 重算一次；已同步则不发；仍变化报错 |
+| Issue 锁定/删除、标记损坏、POST 回查失败 | 明确 error/不确定，不误报 synced，不盲目重发 |
+| --status、旧成功之后失败、日志缺失 | 零写请求；缺失如实未知；旧评论不决定现状 |
 
-工作流静态验证优先使用已有 actionlint，不安装新工具替代简单检查。文档用 Gantry lint、brain lint-links、git diff --check。新脚本变化会匹配现有 test-release 的发布逻辑测试，必要时复用其独立离线验证；不重建 JVM/D8。
+静态验证使用已有 actionlint、Gantry lint、brain lint-links、git diff --check；不安装新工具替代简单检查。scripts 变动匹配现有 test-release，实施时运行适用的发布逻辑离线验证，不重建 JVM/D8。
 
-## 首次交接检查与剩余验证
+## 修订后的交接检查
 
-- 初稿中的“双写 Issue 状态与通知”存在漏报窗口：正文已改为单条评论同时保存通知与检查点（第 4 步），复查包含响应丢失与次日重跑。
-- 只保存最后 SHA 无法区分“没更新”和“根本没检查”：加入 Actions 最近运行、成功时间与 30 小时过期判断（第 5 步），历史提醒与检查健康分开报告。
-- 任务分支即可生效的假设不成立：已按 GitHub 默认分支限制补齐审阅验收、合并、启用、手动 dispatch 的顺序（第 6 步）。未将未部署功能标为完成。
-- 启用 Actions 会恢复其他工作流：已列出现有触发器与本次避免编译的上线顺序，保留未来正常 CI 行为。
-- GITHUB_TOKEN 的真实写入权限、Actions 启用策略、通知订阅与真实 runner 行为只能在授权部署时验证。失败保持当前状态并报告；不扩大权限或更换通知渠道。邮件/手机推送需用户自行订阅确认，API 成功不代表邮件已送达。
-- 起草者按以上状态链、失败出口和上线时序完成初次交接复查，无其他关键机制留给实现者自行猜测。首次基线 A/B、整体方案批准及后续独立实现授权仍待用户决定；后续 Gantry 注解与稳定性复核未冒记为完成。
+- 删除原“发通知即推进基线”的状态链；同步事实源改为两个远端 master 的完整差集。Issue 只用于历史和同日去重，历史草案保留在 Git 与差异记录。
+- fork=false 使跨 fork compare 不宜作为核心机制；采用隔离 bare 完整 fetch，避免浅历史/分页误判。本轮当前本地完整图与远端 SHA 对照证明 P=0；runner 获取、耗时及权限待授权实施验证。
+- 固定 B 是初始已同步记录，不能隐藏远端回退；同日去重、隔日持续提醒分别覆盖。补齐只 fetch、merge 未 push、仅其他分支、部分合并、squash、午夜和快照变化边界。
+- 手动查询区分历史评论与最近检查，旧提醒不能代表现状；日志不可得明确未知。默认分支生效、Actions 启用连带影响及仅提醒边界保留。
+- 本次针对修订链路自查无新产品选项；用户明确的 B 和合入定义已记为接受，六项 AI 技术步骤仍 open。真实权限、Git 网络耗时、POST 与用户订阅须在授权部署验证；不可擅自降级为浅历史或扩大凭据权限。
 
 ## Code
 
