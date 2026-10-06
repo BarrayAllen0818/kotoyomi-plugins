@@ -1,6 +1,6 @@
 ---
 baseline_commit: f9965c747a848c34b7cab1da39c69e17979254ca
-last_diff_commit: f9965c747a848c34b7cab1da39c69e17979254ca
+last_diff_commit: 638fe1bcc4c9587d7f9a1e42ad55a97e294d8722
 last_diff_check: 2026-10-06
 guidance: guided
 ---
@@ -38,3 +38,5 @@ guidance: guided
 - 2026-10-06：用户对两项审查结论回复“确认”，本轮将修正写入第 3.3 项及验证矩阵，保留简单单锁方案，明确发布前取消检查、资源关闭和提交边界。按稳定域名并发、切域排队、旧请求晚到、提交前后取消、失败释放路径重新复核，无新增交接阻塞；新增机制整体 open、workflow pending 保留，未启动实现。本轮仅修改两份 Gantry 文档。
 - 2026-10-06：修正后交付说明明确第 3.2–3.4 项整体待审，用户再次回复“确认”，批准该修订版三项机制。将三项标记 accept，核对正文、两项审查修正与验证矩阵一致，未新增行为或待决项；pseudocode approved、annotations/stabilization complete，implementation pending。更新 PRD 状态，本轮仅记录确认，未修改代码或执行构建。
 - 2026-10-06：按接续对话明确实施授权通过 lint --gate；获得旧源码的封面属性、旧 API 和旧排序路径失败回归后实现。当前 NH 离线 18/18、JM 37/37、线上两个作品用例通过；匿名首页 Cloudflare 页面 403 受阻，不吞异常或算通过。compileKotlin/jar 成功，完整差异审查未发现未处理缺陷。普通测试接线与内存参数修正保持既定约束，未重开设计审批。
+
+- 2026-10-06：实现、测试和交接记录已本地阶段提交为 638fe1bcc4c9587d7f9a1e42ad55a97e294d8722；原 Gantry Code 节保存完整源码快照，绑定该提交。此后仅补记文档，源码、依赖、测试和产物未变化，复用当前有效证据；工作区保留于任务分支，不合并、推送或发布。
