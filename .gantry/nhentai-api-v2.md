@@ -6,7 +6,7 @@
 
 ## 状态与阅读约定
 
-用户已于 2026-10-06 确认根因、需求、策略 A、整体方案及修正后的第 3.2–3.4 项。全部步骤 accept，交接和稳定性检查完成。本接续对话在展示当前稳定版的实施、验证、打包及本地阶段提交范围后，用户回复“确认”，implementation 已 authorized；不含合并、推送、发布或设备验收。分支为 `fix/nhentai-api-v2`，源码基线为 `f9965c747a848c34b7cab1da39c69e17979254ca`。当前已实现，自动与线上结果见执行记录，用户验收待完成。
+用户已于 2026-10-06 确认根因、需求、策略 A、整体方案及修正后的第 3.2–3.4 项。全部步骤 accept，交接和稳定性检查完成。实施接续对话取得当前稳定版的实施、验证、打包及本地阶段提交授权，implementation 为 authorized。此后用户确认项目 AGENTS 的验收前自动推送与插件发布规则，并在发布接续消息明确要求执行，覆盖此前不推送/发布边界；主线合并仍须用户验收。分支为 `fix/nhentai-api-v2`，源码基线为 `f9965c747a848c34b7cab1da39c69e17979254ca`。当前已实现并发布 1.0.136，发布证据见下文，宿主加载及用户验收待完成。
 
 Pseudocode 中的行为、身份及错误边界属于设计约束。私有函数拆分、夹具命名和局部代码写法属于实现建议，可在已确认约束内调整。按 dev-workflow 在聊天中审阅，不启动浏览器编辑器。
 
@@ -119,7 +119,7 @@ GitNexus 绑定本仓库，索引提交与源码基线相同；`fetchGallery` �
   - NH 单元测试使用局部 ContentLoaderContext 与返回合成响应的 OkHttp 拦截器，任何未预期请求立即失败；复用 JM 离线上下文的接线方式，不读取本机 Cookie、Token 或真实网络，不新增测试依赖。
   - 先让旧实现触发封面 src 回退失败和旧 API 请求失败，再实现已确认方案。覆盖真实 v2 字段结构、JPG/WebP 路径、页序、身份、错误策略、CDN 缓存和筛选分页。
   - 线上测试由 `NHENTAI_INTEGRATION_TEST=1` 显式启用；实际抓取详情和页面列表，检查封面、首图、末图为成功图片响应。遇到 Cloudflare 挑战记为线上验证受阻，不能作为“图片验证通过”。
-  - 自动检查完成后按既有插件打包流程交付；发布/推送按后续授权执行。用户在 Kotoyomi 更新插件后验收列表、详情、阅读、翻页及原收藏入口。
+  - 自动检查完成后按既有插件打包流程交付；按已确认的项目 AGENTS 规则自动推送任务分支并更新既有 repo 发布入口，产物仅进入发布分支。用户在 Kotoyomi 更新插件后验收列表、详情、阅读、翻页及原收藏入口，明确验收后再合并主线。
 
 ## 验证矩阵
 
@@ -1327,3 +1327,12 @@ internal class NhentaiCdnCache(private val nanoTime: () -> Long = System::nanoTi
 - 待完成：列表线上验证、宿主插件加载、手机实际显示/翻页/原收藏入口及用户验收；尚未合并、推送或发布。
 - 打包：SDK 34 的 D8 8.2.2 虽退出 0，但出现 Kotlin 2.2 元数据兼容警告，弃用该轮产物。改用已安装的 cmdline-tools/latest/lib/r8.jar（D8 9.3.16）与 JDK 21，-Xmx512m、--release、--min-api 21、--lib android-34/android.jar；以当前 Kotlin stdlib、coroutines、OkHttp、Okio、collection、JSON 和 JSoup 的七个依赖 JAR 仅作为 classpath，最终退出 0、build/nh-d8.log 为空。产物 build/libs/kototoro-parsers-plugin.jar 含 classes.dex，并核对其中存在 NH 缓存类和 /api/v2/galleries/ 字符串；没有新增工具或依赖，没有改变宿主打包契约。
 - 产物绑定：NhentaiParser.kt Git blob 为 07b75f8c4a1bb2fb70ee79a42ef6431dcdfb9140。JVM JAR SHA-256 为 138327cff76e3b41cf7131cad40d7c4cfd60729f53554965a71c6cde6a3325d7；DEX 插件 JAR SHA-256 为 003d550d25883a5a8db4c8d7eee87c9901e9791098bfc763782456ca051fd6f9。构建/缓存/日志/产物保留在 D 盘既有目录，不提交 Git；插件加载仍待用户环境验证。
+
+## 验收发布记录（2026-10-06）
+
+- 授权：用户明确要求从发布阶段接续，复用根因、方案及实施确认；项目 AGENTS 的新发布规则及本次消息覆盖历史记录中的不推送/发布限制。未授权强推或用户验收前合并主线。
+- 身份核对：接续 HEAD 为 07f423651e2f5e10325dc69894af68d7c3b1dc42，工作区干净；638fe1bc 之后仅文档变化。当前 NH Git blob、JVM JAR 和 DEX 插件 SHA-256 均与上述绑定相同。现存 XML 报告为 NH 离线 18/18、JM 37/37、线上 2/3，D8 日志为空；复用编译、打包及完整差异审查证据，不重建、不重跑测试，不称全部测试通过。
+- 发布：fix/nhentai-api-v2 已推送至 origin。由 origin/repo 的 9e0bfa996eed9e8a459446198694c7095cb09df5 建立发布分支 build/nh-acceptance-release，仅修改 index.min.json 的 version/code 为 1.0.136/136，并替换 apk/plugin.jar；其余字段和 .nojekyll 保留。提交 c73bc18b36204b236db95c2944249936bbf76bed 已普通快进推送至 origin/repo，未使用 force_orphan 或强推。
+- 交付入口保持 https://raw.githubusercontent.com/BarrayAllen0818/kotoyomi-plugins/repo/ 。实际请求 index.min.json 返回 HTTP 200、1.0.136/code 136；根据索引下载 apk/plugin.jar 返回 HTTP 200、846915 字节，SHA-256 为 003d550d25883a5a8db4c8d7eee87c9901e9791098bfc763782456ca051fd6f9，与本地验收产物一致。下载核对副本位于 build/nh-published-plugin.jar，不进入源码提交。
+- Git 与检查：git fetch/ls-remote 核实远端；索引 JSON 解析、文件差异与暂存 diff --check、产物哈希、发布历史包含关系均通过。master 仍为 f9965c747a848c34b7cab1da39c69e17979254ca，保留任务分支、发布分支和 D 盘 build/nh-release-repo 工作树。
+- 待用户验收：通过已有仓库更新到 1.0.136，核对 NH 列表封面、详情和章节、JPG/WebP 首末页及连续翻页、普通关键词搜索、语言/标签排序第 2 页和原收藏入口；可顺带核对 JM 编号搜索。匿名首页 403 的自动验证限制保留，插件加载及所有设备/UI 结果不得由发布成功替代。用户反馈通过项、未测试项或具体失败步骤后继续；明确验收后再合并主线并自动推送。
