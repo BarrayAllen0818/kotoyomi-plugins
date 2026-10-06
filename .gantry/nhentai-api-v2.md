@@ -6,7 +6,7 @@
 
 ## 状态与阅读约定
 
-用户已于 2026-10-06 确认根因、需求、策略 A、整体方案及修正后的第 3.2–3.4 项。全部步骤 accept，交接和稳定性检查完成。实施接续对话取得当前稳定版的实施、验证、打包及本地阶段提交授权，implementation 为 authorized。此后用户确认项目 AGENTS 的验收前自动推送与插件发布规则，并在发布接续消息明确要求执行，覆盖此前不推送/发布边界；主线合并仍须用户验收。分支为 `fix/nhentai-api-v2`，源码基线为 `f9965c747a848c34b7cab1da39c69e17979254ca`。当前已实现并发布 1.0.136，发布证据见下文，宿主加载及用户验收待完成。
+用户已于 2026-10-06 确认根因、需求、策略 A、整体方案及修正后的第 3.2–3.4 项。全部步骤 accept，交接和稳定性检查完成。实施接续对话取得当前稳定版的实施、验证、打包及本地阶段提交授权，implementation 为 authorized。此后用户确认项目 AGENTS 的验收前自动推送与插件发布规则，并在发布接续消息明确要求执行，覆盖此前不推送/发布边界；主线合并仍须用户验收。分支为 `fix/nhentai-api-v2`，源码基线为 `f9965c747a848c34b7cab1da39c69e17979254ca`。当前已实现并发布标签修正版本 1.0.137；用户对 1.0.136 的其余正常反馈保留，标签筛选待复验，REQ-002 尚未整体验收通过。
 
 Pseudocode 中的行为、身份及错误边界属于设计约束。私有函数拆分、夹具命名和局部代码写法属于实现建议，可在已确认约束内调整。按 dev-workflow 在聊天中审阅，不启动浏览器编辑器。
 
@@ -1351,3 +1351,1176 @@ internal class NhentaiCdnCache(private val nanoTime: () -> Long = System::nanoTi
 - 交付入口保持 https://raw.githubusercontent.com/BarrayAllen0818/kotoyomi-plugins/repo/ 。实际请求 index.min.json 返回 HTTP 200、1.0.136/code 136；根据索引下载 apk/plugin.jar 返回 HTTP 200、846915 字节，SHA-256 为 003d550d25883a5a8db4c8d7eee87c9901e9791098bfc763782456ca051fd6f9，与本地验收产物一致。下载核对副本位于 build/nh-published-plugin.jar，不进入源码提交。
 - Git 与检查：git fetch/ls-remote 核实远端；索引 JSON 解析、文件差异与暂存 diff --check、产物哈希、发布历史包含关系均通过。master 仍为 f9965c747a848c34b7cab1da39c69e17979254ca，保留任务分支、发布分支和 D 盘 build/nh-release-repo 工作树。
 - 待用户验收：通过已有仓库更新到 1.0.136，核对 NH 列表封面、详情和章节、JPG/WebP 首末页及连续翻页、普通关键词搜索、语言/标签排序第 2 页和原收藏入口；可顺带核对 JM 编号搜索。匿名首页 403 的自动验证限制保留，插件加载及所有设备/UI 结果不得由发布成功替代。用户反馈通过项、未测试项或具体失败步骤后继续；明确验收后再合并主线并自动推送。
+
+## 标签修正验收发布（1.0.137，2026-10-06）
+
+- 源码实现提交 847fdd48bdceabef12bf8e84c2165d6ab9ebe05a 已推送至 origin/fix/nhentai-api-v2。既有发布工作树 build/nh-release-repo 仅更新 index.min.json 的 version/code 为 1.0.137/137，以及 apk/plugin.jar；提交 fe681da35393aec1e0b902cf891406bc03922bf8 已普通快进推送到 origin/repo，其父提交为 c73bc18b36204b236db95c2944249936bbf76bed，保留历史且未强推。
+- 原入口 https://raw.githubusercontent.com/BarrayAllen0818/kotoyomi-plugins/repo/ 的 index.min.json 返回 HTTP 200、1.0.137/code 137；实际下载 apk/plugin.jar 返回 HTTP 200、847863 字节、SHA-256=b0d0292a25241724d465d6245faaa6a9b250828e9bf57a88c35e4c285c0a09cb，与本地产物一致。核对副本仍为 build/nh-published-plugin.jar，不进入源码分支。
+- Git diff 与暂存检查、Gantry gate、发布 JSON 及哈希校验通过。master 仍保留 f9965c747a848c34b7cab1da39c69e17979254ca。源码和产物自上述成功验证后未变化；本次补记不触发重建或重跑回归。
+- 用户操作：沿用仓库更新到 1.0.137，重新选择 abigail williams，确认列表可加载；切换排序、加载第 2 页，再选另一个角色及普通标签各检查一次。反馈通过项、未测试项或具体报错 URL/状态码；不要求重做此前“其余正常”的验收。电脑端 Cloudflare 403 限制不算手机验证成功，明确验收前不合并主线。
+
+## 标签修正源码快照
+
+完整源码绑定提交 847fdd48bdceabef12bf8e84c2165d6ab9ebe05a；文件 src/main/kotlin/org/skepsun/kototoro/parsers/site/all/NhentaiParser.kt。此前快照作为历史保留。
+
+```kotlin
+@file:OptIn(org.skepsun.kototoro.parsers.InternalParsersApi::class)
+
+package org.skepsun.kototoro.parsers.site.all
+
+import okhttp3.Headers
+import okhttp3.Interceptor
+import okhttp3.Response
+import org.jsoup.nodes.Document
+import org.skepsun.kototoro.parsers.InternalParsersApi
+import org.skepsun.kototoro.parsers.ContentLoaderContext
+import org.skepsun.kototoro.parsers.ContentSourceParser
+import org.skepsun.kototoro.parsers.core.PagedContentParser
+import org.skepsun.kototoro.parsers.model.ContentRating
+import org.skepsun.kototoro.parsers.model.Content
+import org.skepsun.kototoro.parsers.model.ContentChapter
+import org.skepsun.kototoro.parsers.model.ContentListFilter
+import org.skepsun.kototoro.parsers.model.ContentListFilterCapabilities
+import org.skepsun.kototoro.parsers.model.ContentListFilterOptions
+import org.skepsun.kototoro.parsers.model.ContentPage
+import org.skepsun.kototoro.parsers.model.ContentParserSource
+import org.skepsun.kototoro.parsers.model.ContentTag
+import org.skepsun.kototoro.parsers.model.ContentTagGroup
+import org.skepsun.kototoro.parsers.model.SortOrder
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import org.json.JSONException
+import org.skepsun.kototoro.parsers.exception.ParseException
+import org.skepsun.kototoro.parsers.util.src
+import org.skepsun.kototoro.parsers.network.UserAgents
+import org.skepsun.kototoro.parsers.util.generateUid
+import org.skepsun.kototoro.parsers.util.parseHtml
+import org.skepsun.kototoro.parsers.util.parseJson
+import org.skepsun.kototoro.parsers.util.parseJsonArray
+import org.skepsun.kototoro.parsers.util.urlEncoded
+import org.json.JSONObject
+import org.skepsun.kototoro.parsers.model.ContentType
+import java.util.EnumSet
+
+/**
+ * nhentai (nhentai.net)
+ */
+@ContentSourceParser("NHENTAI", "nhentai", type=ContentType.HENTAI_MANGA)
+internal class NhentaiParser(context: ContentLoaderContext) :
+    PagedContentParser(context, ContentParserSource.NHENTAI, pageSize = 25), Interceptor {
+
+    override val configKeyDomain = org.skepsun.kototoro.parsers.config.ConfigKey.Domain("nhentai.net")
+    override val availableSortOrders: Set<SortOrder> = EnumSet.of(
+        SortOrder.NEWEST,
+        SortOrder.POPULARITY_TODAY,
+        SortOrder.POPULARITY_WEEK,
+        SortOrder.POPULARITY_MONTH,
+        SortOrder.POPULARITY,
+    )
+
+    override val filterCapabilities: ContentListFilterCapabilities
+        get() = ContentListFilterCapabilities(isSearchSupported = true)
+
+	private val languageTags = listOf(
+		ContentTag("中文", "language:chinese", source),
+		ContentTag("English", "language:english", source),
+		ContentTag("日本語", "language:japanese", source),
+	)
+
+	private val nhTagMap: Map<String, String> by lazy {
+		val raw = """
+2937=big breasts
+35762=sole female
+35763=sole male
+8010=group
+14283=anal
+19440=lolicon
+24201=stockings
+10314=schoolgirl uniform
+13720=nakadashi
+29859=blowjob
+8378=glasses
+20905=full color
+32341=shotacon
+27553=rape
+15658=bondage
+23895=yaoi
+27473=mosaic censorship
+13989=ahegao
+22942=incest
+21712=males only
+1207=milf
+19018=dark skin
+22945=double penetration
+25614=paizuri
+20035=x-ray
+779=futanari
+23237=tankoubon
+21572=multi-work series
+20525=defloration
+14971=sex toys
+8653=netorare
+3735=swimsuit
+19954=yuri
+15348=ffm threesome
+8368=full censorship
+15408=femdom
+29224=impregnation
+29013=dilf
+85295=twintails
+31044=collar
+85288=ponytail
+24380=pantyhose
+9260=cheating
+28031=sister
+16828=hairy
+31880=bbm
+30555=big penis
+15782=crossdressing
+31775=tentacles
+27384=mind break
+19175=bikini
+8739=story arc
+30473=muscle
+24102=lactation
+7752=schoolboy uniform
+20617=mind control
+9083=big ass
+29023=tomgirl
+81774=kemonomimi
+1590=sweating
+9162=masturbation
+7256=mmf threesome
+28550=teacher
+190=maid
+8693=uncensored
+19899=exhibitionism
+6343=pregnant
+8050=females only
+6817=unusual pupils
+25871=lingerie
+10988=anthology
+20282=footjob
+15853=mother
+15785=harem
+14072=huge breasts
+30035=gender bender
+1643=kissing
+130025=anal intercourse
+1033=handjob
+12824=condom
+31386=catgirl
+10476=urination
+3666=garter belt
+26130=fingering
+81707=beauty mark
+22079=drugs
+105833=gloves
+4435=gag
+25601=small breasts
+5820=piercing
+12695=prostitution
+16228=demon girl
+7155=cunnilingus
+22950=tanlines
+832=elf
+31012=blindfold
+17773=kimono
+2820=scat
+29182=blackmail
+23132=bunny girl
+32484=stomach deformation
+2515=virginity
+27063=filming
+7142=bbw
+21989=inflation
+88846=horns
+104227=tail
+26953=bukkake
+28800=bloomers
+25050=gyaru
+24676=rimjob
+23632=big areolae
+16533=sleeping
+73750=bald
+18567=monster
+35972=sole dickgirl
+18328=thigh high boots
+5810=strap-on
+29565=school swimsuit
+32996=deepthroat
+370=business suit
+7550=monster girl
+1067=inseki
+50585=webtoon
+12523=bestiality
+27697=leotard
+30645=dick growth
+29631=inverted nipples
+29366=tomboy
+24412=bodysuit
+15492=scanmark
+9406=enema
+35970=dickgirl on dickgirl
+29399=daughter
+18613=military
+11941=replaced
+6525=nurse
+9661=cervix penetration
+33129=slave
+4573=corruption
+5529=urethra insertion
+10542=snuff
+683=squirting
+51399=crotch tattoo
+122908=very long hair
+7838=magical girl
+24726=apron
+23183=breast expansion
+20074=latex
+28426=hairy armpits
+27217=guro
+31285=fox girl
+106119=no penetration
+24764=drunk
+9990=prostate massage
+35968=dickgirl on male
+2956=old man
+32752=shibari
+6900=miko
+2153=wings
+706=birth
+10794=breast feeding
+14069=ryona
+25822=smell
+5357=humiliation
+5962=spanking
+2531=transformation
+21538=bike shorts
+31101=incomplete
+32745=chikan
+16236=shemale
+36957=bisexual
+26952=tall girl
+25663=oppai loli
+7995=big nipples
+32602=fisting
+106733=hair buns
+1088=bdsm
+21283=masked face
+15225=blowjob face
+2633=leg lock
+27378=artbook
+35971=male on dickgirl
+27112=tiara
+107705=facial hair
+24933=eyepatch
+4549=torture
+30206=tribadism
+1037=oni
+89056=hidden sex
+13136=facesitting
+3391=nun
+25766=gokkun
+5200=pegging
+17531=cosplaying
+28521=voyeurism
+19479=nipple fuck
+17349=tracksuit
+22221=blood
+50505=oyakodon
+50486=tail plug
+560=twins
+23965=chloroform
+15425=vore
+25457=possession
+129668=eye-covering bang
+24984=orgasm denial
+144644=extraneous ads
+28589=hotpants
+17752=foot licking
+32282=piss drinking
+19390=cousin
+32589=feminization
+11376=body modification
+20362=gyaru-oh
+28778=large insertions
+27720=smegma
+10811=double vaginal
+3614=triple penetration
+3455=chastity belt
+2452=scar
+31319=yandere
+7354=amputee
+28335=giantess
+26848=waitress
+28349=cbt
+24967=sumata
+104893=vtuber
+8516=emotionless sex
+26380=demon
+17591=robot
+17801=solo action
+13640=frottage
+25996=gaping
+23035=aunt
+23967=huge penis
+31846=body writing
+25744=cheerleader
+24708=cowgirl
+25085=swinging
+18322=brother
+101724=leash
+10354=milking
+97795=pixie cut
+11089=body swap
+32224=eggs
+10606=pasties
+3947=onahole
+14573=tall man
+10604=dog
+14362=low lolicon
+15242=lab coat
+4935=farting
+13468=shimapan
+5620=double anal
+14138=freckles
+50390=josou seme
+15119=dog girl
+93324=fishnets
+22025=prolapse
+15471=asphyxiation
+21774=human pet
+31337=kunoichi
+15712=eyemask
+30126=big clit
+92409=thick eyebrows
+109360=cumflation
+7208=catboy
+31687=randoseru
+24529=bride
+19561=big balls
+24450=chinese dress
+121738=focus anal
+22967=diaper
+29347=miniguy
+29001=parasite
+25296=armpit licking
+6220=orc
+7546=witch
+30895=sunglasses
+7372=corset
+28119=nose hook
+8429=machine
+7684=armpit sex
+14516=wolf girl
+15045=niece
+13882=tutor
+8391=public use
+30811=christmas
+104245=small penis
+266=sundress
+17501=phimosis
+17800=tickling
+25794=widow
+7288=vomit
+1215=unusual teeth
+72471=dickgirls only
+107503=soushuuhen
+138044=exposed clothing
+1352=slime
+31986=age regression
+23917=long tongue
+24115=angel
+114993=shimaidon
+13722=moral degeneration
+26898=age progression
+27120=selfcest
+7577=vampire
+17676=ghost
+88103=clothed female nude male
+13515=coach
+141098=nipple stimulation
+9116=unbirth
+5936=time stop
+18420=all the way through
+72139=clothed paizuri
+27530=ball sucking
+16518=coprophagia
+28869=stuck in wall
+2527=bandages
+24621=insect
+11399=metal armor
+106006=large tattoo
+3843=fundoshi
+20120=multiple paizuri
+8400=goblin
+129321=mesuiki
+124610=mouth mask
+10693=dougi
+31371=mecha girl
+21450=minigirl
+10685=double blowjob
+118056=petplay
+20789=policewoman
+3031=underwater
+31173=first person perspective
+78262=shaved head
+19064=pubic stubble
+14280=bunny boy
+25949=gothic lolita
+23463=wrestling
+16947=horse
+11247=skinsuit
+11073=living clothes
+30786=watermarked
+23073=assjob
+52826=dark sclera
+107478=drill hair
+23225=non-h
+109930=domination loss
+20170=poor grammar
+138200=gender change
+16759=artistcg
+80978=nudity only
+15749=oil
+30176=petrification
+25848=human cattle
+559=ttf threesome
+14010=snake girl
+11276=multiple penises
+90671=original
+18024=touhou project
+1841=kantai collection
+35605=fate grand order
+20925=the idolmaster
+972=granblue fantasy
+78245=azur lane
+17137=neon genesis evangelion
+3185=love live
+391=girls und panzer
+11219=pokemon
+15021=sailor moon
+4505=mahou shoujo lyrical nanoha
+128408=blue archive
+10222=fate stay night
+27431=to love-ru
+13159=naruto
+123503=genshin impact
+3984=sword art online
+3603=street fighter
+22174=one piece
+16285=puella magi madoka magica
+91195=princess connect
+12232=my hero academia
+3163=king of fighters
+26172=k-on
+7259=touken ranbu
+19080=code geass
+37544=love live sunshine
+17077=cardcaptor sakura
+27547=the melancholy of haruhi suzumiya
+13508=final fantasy vii
+10954=shingeki no kyojin
+25430=vocaloid
+32687=free
+4577=toheart2
+22146=dead or alive
+20025=gochuumon wa usagi desu ka
+8485=dragon ball z
+5037=bleach
+3218=bakemonogatari
+12624=ore no imouto ga konna ni kawaii wake ga nai
+37109=kono subarashii sekai ni syukufuku o
+4369=monster hunter
+127065=hololive
+74788=girls frontline
+24886=fate kaleid liner prisma illya
+6999=toaru kagaku no railgun
+22032=boku wa tomodachi ga sukunai
+18350=ragnarok online
+21674=dragon quest iii
+14345=ojamajo doremi
+7832=darkstalkers
+24135=ah my goddess
+32394=samurai spirits
+1283=queens blade
+16639=haikyuu
+13924=yu-gi-oh
+79467=kimetsu no yaiba
+18238=danganronpa
+26336=yu-gi-oh zexal
+16984=persona 4
+18569=kuroko no basuke
+1910=smile precure
+30587=sakura taisen
+16166=mahou sensei negima
+12285=ranma 12
+8470=infinite stratos
+32363=toaru majutsu no index
+22708=saki
+8708=to heart
+108082=arknights
+16707=detective conan
+22210=guilty gear
+947=gundam seed destiny
+22677=tenchi muyo
+23429=pretty cure
+18512=strike witches
+31027=lucky star
+7408=league of legends
+394=love hina
+23201=kanon
+27704=amagami
+127052=nijisanji
+70802=kemono friends
+52098=persona 5
+22215=super robot wars
+27567=hayate no gotoku
+35251=osomatsu-san
+7633=pripara
+34823=ensemble stars
+37914=re zero kara hajimeru isekai seikatsu
+74918=bang dream
+15041=martian successor nadesico
+24783=dragon ball
+120519=love live nijigasaki high school idol club
+2803=love plus
+5085=senki zesshou symphogear
+28474=zero no tsukaima
+15197=gundam build fighters
+15427=dragon quest iv
+1163=rozen maiden
+23859=yu-gi-oh arc-v
+75023=dragon quest xi
+2112=dungeon ni deai o motomeru no wa machigatteiru darou ka
+36418=voiceroid
+28281=mitsudomoe
+11624=the legend of zelda
+14694=fullmetal alchemist
+16847=dragon quest v
+2497=urusei yatsura
+5671=tengen toppa gurren lagann
+22754=amagi brilliant park
+20606=tsukihime
+5165=gundam build fighters try
+4114=macross frontier
+20763=inazuma eleven
+14550=sister princess
+19083=jojos bizarre adventure
+21052=fate hollow ataraxia
+29922=teitoku
+51810=gudao
+16643=producer
+13848=reimu hakurei
+25125=asuka langley soryu
+17279=sakuya izayoi
+10496=patchouli knowledge
+37739=shielder
+3206=shinji ikari
+38068=gran
+4675=sanae kochiya
+21779=rei ayanami
+14040=fate testarossa
+3870=flandre scarlet
+23902=remilia scarlet
+21688=atago
+11373=marisa kirisame
+35128=kashima
+17154=sakura kinomoto
+31462=satori komeiji
+30080=kaga
+10802=alice margatroid
+17017=aya shameimaru
+17862=yukari yakumo
+5340=shimakaze
+18935=nanoha takamachi
+18896=shirou emiya
+16555=rin tosaka
+16130=rito yuuki
+15890=reisen udongein inaba
+7724=takao
+27060=jeanne darc
+78989=jeanne alter
+7718=naruto uzumaki
+5337=nami
+22975=chun-li
+17502=illyasviel von einzbern
+20111=tifa lockhart
+21131=youmu konpaku
+18026=kazuto kirigaya
+92923=shikikan
+29856=saber
+71442=minamoto no raikou
+1843=asuna yuuki
+51419=gudako
+7488=mai shiranui
+9835=koishi komeiji
+16916=kasumi
+30026=maki nishikino
+143975=sensei
+26906=izuku midoriya
+37275=scathach
+7696=momiji inubashiri
+38039=astolfo
+27794=mikoto misaka
+20062=hamakaze
+78285=artoria pendragon
+34860=katsuki bakugou
+3328=homura akemi
+37687=djeeta
+32200=suzuya
+21108=rin shibuya
+35964=nico yazawa
+27494=levi ackerman
+609=eren jaeger
+11920=sakura haruno
+20427=sailor mercury
+24714=chino kafuu
+31456=mikan yuuki
+866=koyomi araragi
+12149=kyousuke kousaka
+277=haruka nanase
+19926=haruna
+3763=haruhi suzumiya
+26427=mio akiyama
+25439=hinata hyuga
+17811=ran yakumo
+14857=kongou
+18548=kotori minami
+32364=rider
+15641=madoka kaname
+2613=hong meiling
+491=makoto tachibana
+20702=koakuma
+15315=tomoyo daidouji
+10730=shigure
+14265=touma kamijou
+80311=bb
+4203=mami tomoe
+37706=kazuma satou
+33070=umi sonoda
+27172=yuyuko saigyouji
+3353=yuuka kazami
+2078=nagato
+6311=arisu tachibana
+647=belldandy
+9274=maya
+24889=sena kashiwazaki
+15125=golden darkness
+6555=sailor jupiter
+25695=mika jougasaki
+50929=shuten douji
+33077=sailor mars
+8293=minami nitta
+7451=lelouch vi britannia
+389=rika jougasaki
+22469=prinz eugen
+16108=azusa nakano
+12812=tenryuu
+7311=ami mizuno
+6642=byakuren hijiri
+7097=suwako moriya
+19172=miki hoshii
+9657=ayane
+29433=c.c.
+25220=sakura matou
+14499=tsunade
+10665=tenshi hinanai
+16564=miku hatsune
+29190=kallen stadtfeld
+3312=kirino kousaka
+1234=yuki nagato
+26261=ranma saotome
+19002=rin kaenbyou
+12748=nico robin
+32765=rin matsuoka
+4241=fumika sagisawa
+1729=tamaki kousaka
+23997=ruri gokou
+29684=sailor venus
+19160=nitori kawashiro
+27302=uzuki shimamura
+23216=android 18
+8489=hibiki
+7333=suguha kirigaya
+1267=kodaka hasegawa
+2345=morrigan aensland
+9371=yamato
+26087=inazuma
+27532=archer
+26587=miho nishizumi
+12346=utsuho reiuji
+37108=megumin
+22407=takane shijou
+15914=sasuke uchiha
+2774=kyouko sakura
+80930=abigail williams
+81288=gudao | ritsuka fujimaru
+73756=nightingale
+6109=eri ayase
+27492=akagi
+17899=sakura kasugano
+32137=cirno
+11760=yui kotegawa
+75029=eli ayase
+11740=sailor moon
+49158=narmaya
+29693=ikazuchi
+126586=aether
+20918=iori minase
+24832=misato katsuragi
+2883=kasen ibara
+6932=souji okita
+28555=tamamo-no-mae
+14428=kokoa hoto
+26783=taihou
+12763=rumia
+401=nakoruru
+72475=musashi miyamoto
+23122=maho nishizumi
+29188=eirin yagokoro
+466=usagi tsukino
+29638=kyon
+15995=makoto kino
+11744=amatsukaze
+6175=cammy white
+30331=ichika orimura
+23473=mikuru asahina
+28807=ruri hoshino
+2572=hatate himekaidou
+15291=chen
+23386=fujiwara no mokou
+9237=shoukaku
+28763=tewi inaba
+23851=gilgamesh
+10672=aqua
+9702=ro-500
+31074=keine kamishirasawa
+32443=charlotte dunois
+2196=sayaka miki
+1645=zuikaku
+5925=akatsuki
+4196=hestia
+33171=shiho nishizumi
+19534=hayate yagami
+79507=belfast
+12433=kaede takagaki
+12872=warrior
+8170=len kagamine
+50415=rem
+14409=momoka sakurai
+2211=mari illustrious makinami
+99075=kokkoro
+1907=rei hino
+15651=miyu edelfelt
+26169=musashi
+8053=lum
+50596=you watanabe
+9883=kagami hiiragi
+24509=darjeeling
+11992=lala satalin deviluke
+32683=hachiman hikigaya
+31076=kuroko shirai
+20836=red saber
+12902=isuzu sento
+10379=bianca whitaker
+16181=nozomi toujou
+27774=bismarck
+28219=yui hirasawa
+1271=momo velia deviluke
+49852=subaru natsuki
+5918=shinobu oshino
+28056=link
+25605=rangiku matsumoto
+35313=cagliostro
+18453=hero
+75102=nozomi tojo
+20722=mutsu
+29170=yuma tsukumo
+9486=nue houjuu
+33049=ritsuko akizuki
+23626=murakumo
+20323=tsumugi kotobuki
+16566=ritsu tainaka
+14016=yuu narukami
+11609=yoko ritona
+107011=chloe von einzbern
+52132=riko sakurauchi
+32114=onpu segawa
+11924=kagerou imaizumi
+		""".trimIndent()
+		raw.lineSequence()
+			.mapNotNull { line ->
+				val parts = line.split('=')
+				if (parts.size == 2 && parts[0].isNotBlank() && parts[1].isNotBlank()) {
+					parts[0] to parts[1]
+				} else null
+			}.toMap()
+	}
+
+    override suspend fun getFilterOptions(): ContentListFilterOptions =
+        ContentListFilterOptions(
+            availableTags = (languageTags + nhTagMap.map { ContentTag(it.value, "tag:${it.key}", source) }).toSet(),
+            tagGroups = listOf(
+				ContentTagGroup("语言", languageTags.toSet()),
+				ContentTagGroup("标签", nhTagMap.map { ContentTag(it.value, "tag:${it.key}", source) }.toSet()),
+			),
+            availableContentRating = EnumSet.of(ContentRating.ADULT),
+        )
+
+    override fun getRequestHeaders(): Headers = Headers.Builder()
+        .add("User-Agent", UserAgents.CHROME_DESKTOP)
+        .build()
+
+    override fun intercept(chain: Interceptor.Chain): Response {
+        val request = chain.request()
+        return chain.proceed(request.newBuilder()
+            .header("Referer", request.header("Referer") ?: "https://$domain/")
+            .header("User-Agent", UserAgents.CHROME_DESKTOP)
+            .build())
+    }
+
+    override suspend fun getListPage(page: Int, order: SortOrder, filter: ContentListFilter): List<Content> {
+        val operation = requestContext()
+		val query = filter.query.orEmpty()
+		val langTag = filter.tags.firstOrNull { it.key.startsWith("language:") }
+		val tagFilter = filter.tags.firstOrNull { it.key.startsWith("tag:") }
+
+		val sortParam = when (order) {
+			SortOrder.POPULARITY_TODAY -> "popular-today"
+			SortOrder.POPULARITY_WEEK -> "popular-week"
+			SortOrder.POPULARITY_MONTH -> "popular-month"
+			SortOrder.POPULARITY -> "popular"
+			else -> null
+		}
+		val searchSortParam = if (sortParam != null) "&sort=$sortParam" else ""
+
+		val url = when {
+			query.isNotEmpty() -> "https://${operation.domain}/search/?q=${query.urlEncoded()}&page=$page$searchSortParam"
+            langTag != null -> {
+                val language = langTag.key.substringAfter("language:")
+                "https://${operation.domain}/language/$language/?page=$page$searchSortParam"
+            }
+            tagFilter != null -> tagUrl(tagFilter, operation).newBuilder()
+                .addQueryParameter("page", page.toString())
+                .apply { if (sortParam != null) addQueryParameter("sort", sortParam) }
+                .build().toString()
+			sortParam != null -> "https://${operation.domain}/search/?q=%22%22&page=$page$searchSortParam"
+			else -> "https://${operation.domain}/?page=$page"
+		}
+        val doc = webClient.httpGet(url, operation.headers).parseHtml()
+        return parseGalleryList(doc, operation.domain)
+    }
+
+    private suspend fun tagUrl(tag: ContentTag, operation: RequestContext): HttpUrl {
+        val id = tag.key.substringAfter("tag:")
+        val endpoint = "https://${operation.domain}/api/v2/tags/ids"
+        fun invalidTag(field: String, cause: Throwable? = null): Nothing =
+            throw ParseException("NH tag $id: invalid $field", endpoint, cause)
+
+        if (!id.matches(Regex("[1-9][0-9]*")) || id.toLongOrNull() == null) invalidTag("id")
+        // Saved tag keys also include characters/artists; only the site knows their canonical route.
+        val tags = webClient.httpGet("$endpoint?ids=$id", operation.headers).use {
+            currentCoroutineContext().ensureActive()
+            try {
+                it.parseJsonArray()
+            } catch (e: JSONException) {
+                invalidTag("response JSON", e)
+            }
+        }
+        currentCoroutineContext().ensureActive()
+        if (tags.length() != 1) invalidTag("response")
+        val metadata = tags.optJSONObject(0) ?: invalidTag("response")
+        if (metadata.opt("id")?.toString() != id) invalidTag("id")
+        val path = metadata.opt("url") as? String ?: invalidTag("url")
+        if (!path.matches(Regex("/(tag|character|artist|group|parody|category|language)/[^/?#\\\\]+/"))) {
+            invalidTag("url")
+        }
+        val base = "https://${operation.domain}/".toHttpUrlOrNull() ?: invalidTag("domain")
+        val url = base.resolve(path) ?: invalidTag("url")
+        if (url.scheme != base.scheme || url.host != base.host || url.port != base.port ||
+            url.pathSegments.size != 3 || url.pathSegments[1].isEmpty() ||
+            url.query != null || url.fragment != null
+        ) {
+            invalidTag("url")
+        }
+        return url
+    }
+
+    internal fun parseGalleryList(doc: Document, requestDomain: String = domain): List<Content> {
+        return doc.select(".gallery").mapNotNull { el ->
+            val a = if (el.tagName() == "a") el else el.selectFirst("a")
+            if (a == null) return@mapNotNull null
+            val href = a.attr("href")
+            val id = normalizeId(href.replace(Regex("\\D"), ""))
+            val title = el.selectFirst(".caption")?.text()?.trim()
+                ?: el.selectFirst("a > div")?.text()?.trim()
+                ?: el.select("div").lastOrNull()?.text()?.trim()
+                ?: ""
+            val img = el.selectFirst("img") ?: el.selectFirst("a > img")
+            val cover = img?.src(arrayOf("data-src", "src", "data-cfsrc"))
+			val langAttribute = el.attr("data-tags")
+			val lang = if (langAttribute.isNotEmpty()) {
+				langAttribute.split(" ").firstOrNull {
+					it == "12227" || it == "6346" || it == "29963"
+				}?.let {
+					when (it) {
+						"12227" -> "English"
+						"6346" -> "日本語"
+						"29963" -> "中文"
+						else -> ""
+					}
+				}.orEmpty()
+			} else ""
+            if (id.isEmpty() || title.isEmpty()) return@mapNotNull null
+            val coverUrl = cover
+                ?.let { if (it.startsWith("//")) "https:$it" else it }
+                ?.replace("http://", "https://")
+            Content(
+                id = generateUid(id),
+                title = title,
+                altTitles = emptySet(),
+                url = id,
+                publicUrl = "https://$requestDomain/g/$id",
+                rating = org.skepsun.kototoro.parsers.model.RATING_UNKNOWN,
+                contentRating = ContentRating.ADULT,
+                coverUrl = coverUrl,
+                tags = emptySet(),
+                state = null,
+                authors = emptySet(),
+                source = source,
+                description = lang,
+            )
+        }
+    }
+
+    private fun normalizeId(raw: String): String {
+        return raw.removePrefix("nhentai").removePrefix("nh")
+    }
+
+    private data class RequestContext(val domain: String, val headers: Headers)
+
+    private val cdnCache = NhentaiCdnCache()
+
+    private fun requestContext(): RequestContext {
+        val requestDomain = domain
+        return RequestContext(requestDomain, getRequestHeaders().newBuilder()
+            .add("Referer", "https://$requestDomain/").build())
+    }
+
+    private fun invalid(operation: RequestContext, id: String, field: String, cause: Throwable? = null): Nothing {
+        throw ParseException("NH $id: invalid $field", "https://${operation.domain}/api/v2/galleries/$id", cause)
+    }
+
+    private suspend fun fetchGallery(id: String, operation: RequestContext): JSONObject {
+        val json = webClient.httpGet("https://${operation.domain}/api/v2/galleries/$id", operation.headers).use {
+            currentCoroutineContext().ensureActive()
+            try {
+                it.parseJson()
+            } catch (e: JSONException) {
+                invalid(operation, id, "response JSON", e)
+            }
+        }
+        currentCoroutineContext().ensureActive()
+        if (json.opt("id")?.toString() != id) invalid(operation, id, "id")
+        return json
+    }
+
+    private suspend fun cdn(operation: RequestContext): NhentaiCdnConfig =
+        cdnCache.get(operation.domain, { domain }) {
+            val url = "https://${operation.domain}/api/v2/cdn"
+            webClient.httpGet(url, operation.headers).use { response ->
+                currentCoroutineContext().ensureActive()
+                val json = try {
+                    response.parseJson()
+                } catch (e: JSONException) {
+                    throw ParseException("NH CDN: invalid JSON", url, e)
+                }
+                fun server(field: String): HttpUrl {
+                    val array = json.optJSONArray(field)
+                    val selected = (0 until (array?.length() ?: 0)).asSequence()
+                        .mapNotNull { (array?.opt(it) as? String)?.toHttpUrlOrNull() }
+                        .firstOrNull { it.isHttps }
+                    return selected ?: throw ParseException("NH CDN: invalid $field", url)
+                }
+                NhentaiCdnConfig(server("image_servers"), server("thumb_servers"))
+            }
+        }
+
+    private suspend fun imageUrl(
+        path: String,
+        operation: RequestContext,
+        id: String,
+        field: String,
+        thumbnail: Boolean,
+    ): HttpUrl {
+        path.toHttpUrlOrNull()?.let {
+            if (!it.isHttps) invalid(operation, id, field)
+            return it
+        }
+        val config = cdn(operation)
+        val base = if (thumbnail) config.thumbnails else config.images
+        return base.resolve(path)?.takeIf { it.isHttps } ?: invalid(operation, id, field)
+    }
+
+    private fun requiredPath(json: JSONObject?, operation: RequestContext, id: String, field: String): String =
+        (json?.opt("path") as? String)?.takeIf { it.isNotBlank() } ?: invalid(operation, id, field)
+
+    override suspend fun getDetails(manga: Content): Content {
+        val operation = requestContext()
+        val galleryId = normalizeId(manga.url)
+        val json = fetchGallery(galleryId, operation)
+
+        val title = json.optJSONObject("title")?.optString("english")
+            ?.ifEmpty { json.optJSONObject("title")?.optString("japanese") }
+            ?.ifEmpty { manga.title }
+            ?: manga.title
+
+        val coverPath = requiredPath(json.optJSONObject("cover"), operation, galleryId, "cover.path")
+        val coverUrl = imageUrl(coverPath, operation, galleryId, "cover.path", thumbnail = true).toString()
+
+		var languageName: String? = null
+		var translated = false
+		val languageCandidates = mutableListOf<String>()
+		val authors = mutableSetOf<String>()
+        val tags = json.optJSONArray("tags")?.let { arr ->
+            buildSet {
+                for (i in 0 until arr.length()) {
+                    val tag = arr.optJSONObject(i)
+                    val name = tag?.optString("name")?.trim().orEmpty()
+					val type = tag?.optString("type").orEmpty()
+					val id = tag?.optInt("id") ?: 0
+                    if (name.isNotEmpty()) {
+						if (type == "language") {
+							if (name.equals("translated", ignoreCase = true)) {
+								translated = true
+							} else {
+								languageCandidates.add(name)
+							}
+						}
+						if (name.equals("translated", ignoreCase = true)) translated = true
+						if (type == "artist") authors.add(name)
+						add(ContentTag(name, name, source))
+						// Backup: derive language by id if not set
+						if (type == "language") {
+							when (id) {
+								12227 -> languageCandidates.add("English")
+								6346 -> languageCandidates.add("日本語")
+								29963 -> languageCandidates.add("中文")
+								else -> {}
+							}
+						}
+					}
+                }
+            }
+        } ?: emptySet()
+
+		languageName = languageCandidates.firstOrNull {
+			it.equals("中文", ignoreCase = true) || it.equals("chinese", ignoreCase = true)
+		} ?: languageCandidates.firstOrNull {
+			it.equals("日本語", ignoreCase = true) || it.contains("japanese", ignoreCase = true)
+		} ?: languageCandidates.firstOrNull {
+			it.equals("English", ignoreCase = true) || it.contains("english", ignoreCase = true)
+		} ?: languageCandidates.firstOrNull()
+
+		val langTag = languageName ?: run {
+			when {
+				tags.any { it.title.equals("中文", ignoreCase = true) || it.title.contains("chinese", ignoreCase = true) } -> "中文"
+				tags.any { it.title.contains("日本", ignoreCase = true) || it.title.contains("japanese", ignoreCase = true) } -> "日本語"
+				tags.any { it.title.equals("English", ignoreCase = true) || it.title.contains("english", ignoreCase = true) } -> "English"
+				else -> null
+			}
+		}
+
+        return manga.copy(
+            title = title,
+            tags = if (tags.isNotEmpty()) tags else manga.tags,
+            chapters = listOf(
+                ContentChapter(
+                    id = generateUid("${manga.id}-0"),
+                    title = "Chapter 1",
+                    number = 1f,
+                    volume = 0,
+                    url = manga.url,
+                    scanlator = null,
+                    uploadDate = 0,
+                    branch = null,
+                    source = source,
+                )
+            ),
+            contentRating = ContentRating.ADULT,
+            description = langTag?.let { if (translated) "$it / translated" else it } ?: manga.description,
+            coverUrl = coverUrl,
+            authors = if (authors.isNotEmpty()) authors else manga.authors,
+        )
+    }
+
+    override suspend fun getPages(chapter: ContentChapter): List<ContentPage> {
+        val operation = requestContext()
+        val galleryId = normalizeId(chapter.url)
+        val json = fetchGallery(galleryId, operation)
+        val count = json.opt("num_pages")?.toString()?.toIntOrNull()?.takeIf { it > 0 }
+            ?: invalid(operation, galleryId, "num_pages")
+        val array = json.optJSONArray("pages") ?: invalid(operation, galleryId, "pages")
+        if (array.length() == 0) invalid(operation, galleryId, "pages")
+        if (array.length() != count) invalid(operation, galleryId, "num_pages")
+        val paths = sortedMapOf<Int, String>()
+        for (index in 0 until array.length()) {
+            val page = array.optJSONObject(index)
+            val number = page?.opt("number")?.toString()?.toIntOrNull()
+                ?: invalid(operation, galleryId, "pages[$index].number")
+            if (number !in 1..count || paths.containsKey(number)) {
+                invalid(operation, galleryId, "pages[$index].number=$number")
+            }
+            paths[number] = requiredPath(page, operation, galleryId, "pages[number=$number].path")
+        }
+        return paths.map { (number, path) ->
+            val url = imageUrl(path, operation, galleryId, "pages[number=$number].path", thumbnail = false)
+            val identity = url.encodedPath.removePrefix("/") + (url.encodedQuery?.let { "?$it" } ?: "")
+            ContentPage(
+                id = generateUid(identity),
+                url = url.toString(),
+                preview = url.toString(),
+                headers = mapOf("Referer" to "https://${operation.domain}/"),
+                source = source,
+            )
+        }
+    }
+
+    override suspend fun getPageUrl(page: ContentPage): String = page.url
+}
+
+internal data class NhentaiCdnConfig(val images: HttpUrl, val thumbnails: HttpUrl)
+
+/** NH 局部串行缓存；旧域操作可以完成，但不能发布到当前域缓存。 */
+internal class NhentaiCdnCache(private val nanoTime: () -> Long = System::nanoTime) {
+    private data class Entry(val domain: String, val value: NhentaiCdnConfig, val validatedAt: Long)
+    private val mutex = Mutex()
+    private var entry: Entry? = null
+
+    suspend fun get(
+        requestDomain: String,
+        currentDomain: () -> String,
+        load: suspend () -> NhentaiCdnConfig,
+    ): NhentaiCdnConfig = mutex.withLock {
+        currentCoroutineContext().ensureActive()
+        val current = currentDomain()
+        if (entry?.domain != current) entry = null
+        val cached = entry
+        if (requestDomain == current && cached != null && nanoTime() - cached.validatedAt < 600_000_000_000L) {
+            return@withLock cached.value
+        }
+        val loaded = load()
+        val validatedAt = nanoTime()
+        currentCoroutineContext().ensureActive()
+        // 最后取消检查与同步提交之间不挂起；提交后的取消不回滚有效缓存。
+        if (currentDomain() == requestDomain) entry = Entry(requestDomain, loaded, validatedAt)
+        loaded
+    }
+}
+```
