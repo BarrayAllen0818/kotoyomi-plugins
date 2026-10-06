@@ -1,0 +1,25 @@
+name: Test plugin publication
+
+on:
+  push:
+    paths:
+      - '.github/scripts/**'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/test-release.yml'
+  pull_request:
+    paths:
+      - '.github/scripts/**'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/test-release.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 .github/scripts/test_publish_plugin.py
