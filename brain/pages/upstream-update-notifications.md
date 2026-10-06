@@ -5,7 +5,7 @@ category: decision
 status: active
 tags: [upstream, notifications]
 created: "2026-10-06T14:57:12"
-updated: "2026-10-06T14:57:26"
+updated: "2026-10-06T15:00:44"
 ---
 
 <!-- compiled_truth -->
@@ -38,4 +38,10 @@ updated: "2026-10-06T14:57:26"
   kind: decision
   summary: "记录每日六点仅提醒及按用户口令查询的约定，明确入口尚未实现"
   source: "2026-10-06 当前对话用户确认；PRD.md REQ-004"
+  affects: [upstream-update-notifications]
+
+- time: 2026-10-06T15:00:44
+  kind: decision
+  summary: "用户确认 REQ-004 需求阶段完成并进入方案阶段；提醒入口尚未实现，方案批准与实现授权未取得"
+  source: "2026-10-06 需求交付后用户回复：确认"
   affects: [upstream-update-notifications]
