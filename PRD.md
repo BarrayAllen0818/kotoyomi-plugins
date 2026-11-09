@@ -2,7 +2,7 @@
 
 ## REQ-005：2026-11-09 上游同步
 
-状态：已完成上游合并、423 项离线测试、JVM 构建与 D8 打包，远端发布和用户验收待完成。
+状态：已完成上游合并、423 项离线测试、JVM 构建与 D8 打包，同步分支已推送；验收插件 1.0.138 已发布且 HTTP 索引与插件哈希核对通过。用户实际使用验收待完成，master 尚未合入本次更新。
 
 ### 同步范围与预期
 
@@ -19,7 +19,9 @@
 - 插件 `build/libs/kototoro-parsers-plugin.jar` 仅含 `classes.dex`，997421 字节，SHA-256 为 `ca186f5873de44478ed73d8ca261ea35feec7a75e5232eb13437cec00fb4f321`。完整测试选择和产物证据保存在已忽略的 `build/sync-validation/verification.json`。
 - `python -B .github/scripts/test_check_upstream.py` 的 31 项、`python -B .github/scripts/test_publish_plugin.py` 的 9 项均通过。
 - 全量合并差异的 `git diff --cached --check` 有 37 处上游自带的空白格式诊断，与上游原始差异完全一致，保留原样；本次新增需求记录检查通过。NH 实现、个人 JM 编号测试及发布/提醒工作流的 Git blob 与合并前一致；来源摘要经 KSP 生成后无额外变化。
-- 远端发布、HTTP 下载哈希核对和用户实际使用验收待完成。
+- 源码合并提交 `5d626482fb563311d43657d8af6634ea5ceaa1e4` 已推送到 `origin/sync/upstream-2026-11-09`，父提交分别为本次同步起点和目标上游提交。
+- 通过既有 `publish_plugin.py --artifact build/libs/kototoro-parsers-plugin.jar --expected-sha256 ca186f5873de44478ed73d8ca261ea35feec7a75e5232eb13437cec00fb4f321 --source-ref 5d626482fb563311d43657d8af6634ea5ceaa1e4 --push --verify-base-url https://raw.githubusercontent.com/BarrayAllen0818/kotoyomi-plugins/repo/` 发布 1.0.138；`origin/repo` 由 `fe681da35393aec1e0b902cf891406bc03922bf8` 快进至 `d1988e657185f3f4a665650abfc924fd8c54d917`，返回 `http_verified=true`。
+- 发布候选工作树 `build/plugin-releases/candidate-kazo6hoy` 保留；后续仅记录文档，不重建已发布产物。验收时在 Kotoyomi 更新现有仓库至 1.0.138，检查常用来源，以及 JM 编号搜索、NH 标签筛选与阅读；实际使用结果由用户反馈。
 
 ## REQ-001：JM 编号搜索
 
