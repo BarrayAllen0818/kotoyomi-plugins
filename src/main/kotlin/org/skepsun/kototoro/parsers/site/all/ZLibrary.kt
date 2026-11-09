@@ -1,8 +1,15 @@
 package org.skepsun.kototoro.parsers.site.all
 
 import androidx.annotation.VisibleForTesting
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
+import okhttp3.Cookie
 import okhttp3.Headers
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Response
+import org.json.JSONArray
+import org.jsoup.HttpStatusException
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.skepsun.kototoro.parsers.ContentLoaderContext
 import org.skepsun.kototoro.parsers.ContentParserAuthProvider
@@ -12,15 +19,16 @@ import org.skepsun.kototoro.parsers.core.PagedContentParser
 import org.skepsun.kototoro.parsers.exception.AuthRequiredException
 import org.skepsun.kototoro.parsers.exception.ParseException
 import org.skepsun.kototoro.parsers.model.*
-import org.skepsun.kototoro.parsers.network.UserAgents
 import org.skepsun.kototoro.parsers.util.*
+import java.net.HttpURLConnection.HTTP_OK
 import java.util.EnumSet
+import java.util.Locale
 
 /**
  * Z-Library - 大型电子书图书馆（出版物为主）
  *
  * 网站: https://z-library.sk/
- * 最后验证: 2026-09（页面结构以 2025 年 Wayback 快照比对；线上有 DiamWall JS 盾）
+ * 最后验证: 2026-10（页面结构以 2025 年 Wayback 快照比对；线上有 DiamWall JS 盾）
  *
  * 站点协议（匿名可读、下载需登录）:
  * - 搜索: `/s/{query}?page=N`，可加 `selected_content_types[]=book`、`extensions[]=EPUB`、`languages[]=english`、`order=popular|date|year`
@@ -30,9 +38,14 @@ import java.util.EnumSet
  *
  * 认证:
  * - 浏览搜索匿名可用；下载需要 remix_userid + remix_userkey cookie（WebView 登录）
- * - 站方 DiamWall 按 UA/IP/TLS 指纹打分：正常浏览器先发 307 下发 `__diamwall` cookie 并由 JS 计算后续；
- *   非浏览器客户端会得到 503 "verifying your browser"（验证页）或 517 "unusual"（直接拒绝），
- *   两者都在这里转换成带指引的 ParseException。应用内 WebView 登录可完成 JS 验证并携带会话 cookie
+ * - 站方 DiamWall 按 UA、UA-CH、TLS 指纹打分，放行时才下发 `__diamwall` clearance cookie。
+ *   非浏览器客户端会收到 503、513 "Verifying your browser" 或 517 "Access Denied"，
+ *   也可能收到 200 + 一段只跑 JS 的挑战页（`<title>` 含 DiamWall）。新版挑战是交互式 CAPTCHA
+ *   （同源 iframe `/.well-known/diamwall/...`），纯 HTTP 客户端解不了，只有指纹自洽的真实浏览器
+ *   能通过；验证是通过宿主 WebView 做的（requestBrowserAction）
+ * - clearance 与签发它的客户端指纹绑定：浏览器验证通过后，OkHttp 即便带着 cookie 仍会被 513
+ *   拒答。所以 OkHttp 被拦时先回退到宿主 WebView 里用同源 XHR 取正文（见 [fetchInBrowser]），
+ *   仍然不行才请用户在浏览器里验证
  *
  * 限制:
  * - 下载有每日配额；本解析器不处理验证码与账号付费逻辑
@@ -41,6 +54,10 @@ import java.util.EnumSet
 internal class ZLibrary(context: ContentLoaderContext) :
 	PagedContentParser(context, ContentParserSource.ZLIBRARY, pageSize = 50),
 	ContentParserAuthProvider {
+
+	/** 诊断用：上一次正文是不是从浏览器通道拿到的 */
+	@Volatile
+	private var lastFetchUsedBrowser = false
 
 	/**
 	 * 均为 2026-09 实测在线的官方边缘节点（DiamWall 特征一致）：
@@ -55,11 +72,13 @@ internal class ZLibrary(context: ContentLoaderContext) :
 		"en.z-library.sk",
 	)
 
-	/**
-	 * DiamWall 按 UA/指纹打分，默认 `Kototoro/x.x` UA 会直接被判异常，
-	 * 这里以桌面 Chrome 作为可配置默认值（站点设置里的 UserAgent 项可覆盖）
+	/*
+	 * 刻意不覆盖 userAgentKey：基类默认值就是宿主 WebView 自己的 UA（context.getDefaultUserAgent()），
+	 * 而应用内浏览器正是拿本源 UA 去装载验证页面。DiamWall 会交叉比对 navigator.userAgent 与
+	 * UA-CH/platform/touch 等环境特征，给 Android WebView 塞桌面 Windows UA 会自相矛盾，挑战页就
+	 * 永远停在 "Verifying your browser"；只有浏览器与 OkHttp 都用引擎真实 UA，两边指纹才一致。
+	 * 站点设置里的 UserAgent 项仍可覆盖此默认值。
 	 */
-	override val userAgentKey = ConfigKey.UserAgent(UserAgents.CHROME_DESKTOP)
 
 	override val authUrl: String
 		get() = "https://$domain/"
@@ -79,16 +98,14 @@ internal class ZLibrary(context: ContentLoaderContext) :
 			isTagsExclusionSupported = false,
 		)
 
+	/**
+	 * 只加与浏览器无关的通用头。不要伪造 `sec-ch-ua*` / `Sec-Fetch-*`：宿主会把这里返回的头
+	 * 原样交给 WebView.loadUrl 作为顶层导航头，而顶层导航的 `Sec-Fetch-Site` 只可能是 `none`，
+	 * 再叠加与真实引擎矛盾的桌面 client hints，会被 DiamWall 直接判成机器人
+	 */
 	override fun getRequestHeaders(): Headers = super.getRequestHeaders().newBuilder()
 		.add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
-		.add("Accept-Language", "en-US,en;q=0.9,zh-CN;q=0.8")
-		.add("sec-ch-ua", "\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"126\", \"Google Chrome\";v=\"126\"")
-		.add("sec-ch-ua-mobile", "?0")
-		.add("sec-ch-ua-platform", "\"Windows\"")
-		.add("Sec-Fetch-Dest", "document")
-		.add("Sec-Fetch-Mode", "navigate")
-		.add("Sec-Fetch-Site", "same-origin")
-		.add("Upgrade-Insecure-Requests", "1")
+		.add("Accept-Language", acceptLanguageHeader())
 		.build()
 
 	override suspend fun isAuthorized(): Boolean {
@@ -108,28 +125,309 @@ internal class ZLibrary(context: ContentLoaderContext) :
 	)
 
 	override suspend fun getListPage(page: Int, order: SortOrder, filter: ContentListFilter): List<Content> {
-		return parseBookList(fetchDocument(buildListUrl(page, order, filter)))
+		val homeFeed = isHomeFeed(filter)
+		if (homeFeed && page > 1) {
+			// 首页推荐流不分页，翻页直接收尾，避免反复拿到同一批
+			return emptyList()
+		}
+		val url = buildListUrl(page, order, filter)
+		val doc = fetchDocument(url)
+		val items = if (homeFeed) parseHomeFeed(doc) else parseBookList(doc)
+		if (homeFeed && isLanguageExplicitlySet()) {
+			// 语言覆盖还没真正生效，先把站点语言开关的存法探出来（跟随系统下不影响正常浏览）
+			throw ParseException(probeLanguageSwitch(), url)
+		}
+		if (items.isEmpty() && homeFeed) {
+			// 搜索为空是正常结果；推荐流为空基本是站点改版，抛出来才能定位
+			throw ParseException(describeEmptyList(doc), url)
+		}
+		return items
 	}
 
 	/**
-	 * DiamWall 命中时 [org.skepsun.kototoro.parsers.network.WebClient.httpGet] 会先抛
-	 * HttpStatusException（503 verifying / 517 denied），这里换成可操作的错误提示
+	 * 站点已不支持无关键词的 /s/?filters（302 回首页），浏览列表只能落在首页推荐流上。
+	 * 带关键词或有分类标签时仍走搜索页
+	 */
+	@VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+	internal fun isHomeFeed(filter: ContentListFilter): Boolean =
+		filter.query.isNullOrBlank() && filter.tags.none { it.key.startsWith("cat:") }
+
+	/**
+	 * 推荐流解析为空时把页面形态摊出来，用来区分"盾拦/跳到了别的页"和"卡片结构漂移"。
+	 * 只在推荐流（浏览列表）抛，搜索无结果仍然返回空列表
+	 */
+	@VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+	internal fun describeEmptyList(doc: Document): String {
+		val cards = doc.select("z-bookcard")
+		val bookLinks = doc.select("a[href*=/book/]")
+		val head = "Z-Library 推荐流解析失败：cards=${cards.size} books=${bookLinks.size} " +
+			"imgs=${doc.select("img").size} jsons=${doc.select("script[type=application/json]").size} " +
+			"len=${doc.outerHtml().length} mode=${if (lastFetchUsedBrowser) "browser" else "http"} " +
+			"lang=${context.cookieJar.getCookies(domain).firstOrNull { it.name == LANGUAGE_COOKIE }?.value} " +
+			"title=${doc.title().take(36)}"
+		val first = (cards.getOrNull(0) ?: bookLinks.getOrNull(0))?.outerHtml()?.take(140)
+			?.replace('\n', ' ')
+		if (first == null) {
+			return "$head text=${doc.body()?.text().orEmpty().take(50)}"
+		}
+		return "$head first=$first"
+	}
+
+	/**
+	 * 首页推荐流跟着站点语种走。语种存在 `siteLanguage` cookie 里，页面里没有语言控件，
+	 * 所以"跟随系统"就是把这个 cookie 写成系统语言，用户也可以直接指定一种语言
+	 */
+	@VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+	internal val languageKey = ConfigKey.PreferredLanguage(
+		title = "推荐流语言",
+		presetValues = linkedMapOf(
+			LANGUAGE_SYSTEM to "跟随系统",
+			LANGUAGE_ALL to "不限（站点默认）",
+			"english" to "English",
+			"chinese" to "中文",
+			"japanese" to "日本語",
+			"korean" to "한국어",
+			"russian" to "Русский",
+			"spanish" to "Español",
+			"french" to "Français",
+			"german" to "Deutsch",
+			"italian" to "Italiano",
+			"portuguese" to "Português",
+			"arabic" to "العربية",
+			"turkish" to "Türkçe",
+			"polish" to "Polski",
+			"dutch" to "Nederlands",
+			"vietnamese" to "Tiếng Việt",
+		),
+		defaultValue = LANGUAGE_SYSTEM,
+	)
+
+	override fun onCreateConfig(keys: MutableCollection<ConfigKey<*>>) {
+		super.onCreateConfig(keys)
+		keys.add(languageKey)
+	}
+
+	/**
+	 * 站点语言名：跟随系统时由系统语言折算，不限时为空串。
+	 * 站点把语种存在 `siteLanguage` cookie 里（页面里没有语言控件，纯 JS 渲染），
+	 * 所以覆盖语言要做的是改写这个 cookie
+	 */
+	@VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+	internal fun siteLanguage(): String = when (val language = config[languageKey]) {
+		LANGUAGE_ALL -> ""
+		LANGUAGE_SYSTEM -> siteLanguageForLocales(context.getPreferredLocales())
+		else -> language
+	}
+
+	/**
+	 * @param existingValue 站点当前 `siteLanguage` 的值
+	 * @return 要写入的 cookie 值；null 表示不动（不限，或无法映射）
+	 */
+	@VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+	internal fun languageCookieValue(existingValue: String?): String? {
+		val siteLanguage = siteLanguage()
+		if (siteLanguage.isEmpty()) {
+			return null
+		}
+		val iso = LANGUAGE_ISO_BY_LANGUAGE_NAME[siteLanguage] ?: return null
+		// 站点现有写法是 ISO 码就写码，是语言名就写名
+		val usesIsoCode = existingValue == null || ISO_LANGUAGE_CODE_REGEX.matches(existingValue)
+		return if (usesIsoCode) iso else siteLanguage
+	}
+
+	/** 是否在设置里明确指定了语言（不是跟随系统/不限） */
+	@VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+	internal fun isLanguageExplicitlySet(): Boolean = config[languageKey].let { language ->
+		language != LANGUAGE_SYSTEM && language != LANGUAGE_ALL
+	}
+
+	/**
+	 * 临时探测：站点右下角的语言开关是 JS 渲染的，DOM 里搜不到控件。
+	 * 这里在浏览器上下文里跑一段脚本，把语言相关的 cookie/localStorage/select/hreflang 摊出来
+	 */
+	private suspend fun probeLanguageSwitch(): String {
+		val probe = try {
+			context.evaluateJs("https://$domain/", LANGUAGE_PROBE_SCRIPT)
+		} catch (e: CancellationException) {
+			throw e
+		} catch (e: Exception) {
+			e.message ?: e.toString()
+		}
+		return "Z-Library 语言探测：\njar: " + jarCookieSummary() + "\nbrowser: " + (probe ?: "不可用")
+	}
+
+	/** 语言相关 cookie 打全值，其它只留名字，避免把凭据带进错误信息 */
+	private fun jarCookieSummary(): String = context.cookieJar.getCookies(domain).joinToString(",") { cookie ->
+		if (cookie.name == LANGUAGE_COOKIE || cookie.name.contains("lang", ignoreCase = true)) {
+			"${cookie.name}=${cookie.value}"
+		} else {
+			cookie.name
+		}
+	}
+
+	private suspend fun applyLanguageCookie() {
+		val url = "https://$domain/".toHttpUrl()
+		val existing = context.cookieJar.getCookies(domain).firstOrNull { it.name == LANGUAGE_COOKIE }
+		val value = languageCookieValue(existing?.value) ?: return
+		if (existing?.value == value) {
+			return
+		}
+		context.cookieJar.saveFromResponse(
+			url,
+			listOf(
+				Cookie.Builder()
+					.domain(domain)
+					.path("/")
+					.name(LANGUAGE_COOKIE)
+					.value(value)
+					.build(),
+			),
+		)
+	}
+
+	/** 系统语言 → 站点语言名，跟着系统走时用它折算 siteLanguage */
+	@VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+	internal fun siteLanguageForLocales(locales: List<Locale>): String =
+		locales.firstNotNullOfOrNull { LANGUAGE_BY_ISO[it.language?.lowercase()] }.orEmpty()
+
+	@VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+	internal fun acceptLanguageHeader(): String {
+		val codes = when (val language = config[languageKey]) {
+			LANGUAGE_SYSTEM, LANGUAGE_ALL -> context.getPreferredLocales()
+				.mapNotNull { it.language?.lowercase()?.takeIf { code -> code.isNotEmpty() && code != "und" } }
+			else -> listOfNotNull(LANGUAGE_BY_ISO.entries.firstOrNull { it.value == language }?.key)
+		}.distinct().ifEmpty { listOf(DEFAULT_LANGUAGE_ISO) }
+		return codes.mapIndexed { index, code -> if (index == 0) code else "$code;q=0.8" }.joinToString(",")
+	}
+
+	/**
+	 * 优先用 OkHttp 取页；被 DiamWall 拦下时改走宿主 WebView 的同源 XHR；两者都拿不到才请用户
+	 * 去应用内浏览器完成验证。
+	 *
+	 * 之所以要回退到浏览器：clearance 与签发它的客户端指纹绑定，浏览器验证通过后 OkHttp 仍会被
+	 * 513 拒答（表现为"验证过了还一直报拦截"）。WebView 里的 XHR 与浏览器同指纹、共享 cookie jar，
+	 * 能直接拿到正文
 	 */
 	private suspend fun fetchDocument(url: String): Document {
+		applyLanguageCookie()
+		lastFetchUsedBrowser = false
+		val direct = fetchDirect(url)
+		if (direct != null && !isDiamWallChallenge(direct)) {
+			return direct
+		}
+		fetchInBrowser(url)?.let { return it }
+		requestBrowserVerification(url)
+	}
+
+	/**
+	 * @return null 表示被 DiamWall 按状态码拒答，需要走浏览器通道；其余错误照常抛出
+	 */
+	private suspend fun fetchDirect(url: String): Document? {
 		val response = try {
 			webClient.httpGet(url, getRequestHeaders())
-		} catch (e: org.jsoup.HttpStatusException) {
-			if (e.statusCode == HTTP_ANTIBOT || e.statusCode == HTTP_ANTIBOT_VERIFY) {
-				throw ParseException(
-					"Z-Library DiamWall 反爬校验 (HTTP ${e.statusCode})：请在应用内打开本源并完成登录" +
-						"（WebView 会执行浏览器验证并带上会话 Cookie）；若持续失败请改用 Library Genesis 等源",
-					e.url ?: url,
-				)
+		} catch (e: HttpStatusException) {
+			if (isDiamWallStatus(e.statusCode)) {
+				return null
 			}
 			throw e
 		}
 		checkAuth(response)
 		return response.parseHtml()
+	}
+
+	/**
+	 * 在宿主 WebView 的页面上下文里用同步 XHR 取同一个 URL。
+	 *
+	 * 同步 XHR 不能设 timeout（Chromium 直接抛 InvalidAccessError），所以这里没有自设超时，
+	 * 卡住时靠宿主 evaluateJs 的 4s 看门狗兜底；拿不到正文（无浏览器能力、超时、仍是挑战页）
+	 * 时返回 null，由调用方转到 requestBrowserAction
+	 */
+	private suspend fun fetchInBrowser(url: String): Document? {
+		val raw = try {
+			context.evaluateJs(url, buildBrowserFetchScript(url))
+		} catch (_: TimeoutCancellationException) {
+			// 宿主 evaluateJs 的 4s 看门狗到点，按"取不到"处理，转浏览器动作
+			null
+		} catch (e: CancellationException) {
+			throw e
+		} catch (_: Exception) {
+			null
+		} ?: return null
+		val result = runCatching { JSONArray(raw) }.getOrNull() ?: return null
+		val html = result.optString(1)
+		if (result.optInt(0, -1) != HTTP_OK || html.isBlank()) {
+			return null
+		}
+		return Jsoup.parse(html, url).takeUnless(::isDiamWallChallenge)?.also { lastFetchUsedBrowser = true }
+	}
+
+	@VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+	internal fun buildBrowserFetchScript(url: String): String = BROWSER_FETCH_SCRIPT
+		.replace(BROWSER_FETCH_URL_SLOT, url.toJsStringLiteral())
+		.replace(BROWSER_FETCH_LANGUAGE_SLOT, languageCookieStatement())
+
+	/**
+	 * 浏览器通道里的 XHR 用的是 WebView 自己的 cookie 存储，jar 里写好的语种不一定同步过去，
+	 * 所以在发请求前用 document.cookie 再兜一次（origin 不是站点时这里会抛，忽略即可）
+	 */
+	private fun languageCookieStatement(): String {
+		val existing = context.cookieJar.getCookies(domain).firstOrNull { it.name == LANGUAGE_COOKIE }?.value
+		val value = languageCookieValue(existing) ?: return ""
+		return "try{document.cookie=${"$LANGUAGE_COOKIE=$value;path=/;".toJsStringLiteral()};}catch(e){}"
+	}
+
+	/**
+	 * 交给宿主浏览器验证。没有浏览器能力的环境（CLI、测试）里声明式接口会抛
+	 * UnsupportedOperationException，这里退化成带指引的解析错误，避免裸异常
+	 */
+	private fun requestBrowserVerification(url: String): Nothing {
+		try {
+			context.requestBrowserAction(this, url)
+		} catch (e: UnsupportedOperationException) {
+			throw ParseException(
+				"Z-Library 被 DiamWall 浏览器验证拦截：请在应用内打开本源，完成验证后再试",
+				url,
+				e,
+			)
+		}
+	}
+
+	/** 注进 WebView 的 URL 走 JS 字符串字面量，避免引号/反斜杠截断脚本 */
+	private fun String.toJsStringLiteral(): String = buildString(length + 2) {
+		append('"')
+		for (c in this@toJsStringLiteral) {
+			when (c) {
+				'"', '\\' -> append('\\').append(c)
+				'\n' -> append("\\n")
+				'\r' -> append("\\r")
+				'\u2028', '\u2029' -> append("\\u").append(c.code.toString(16).padStart(4, '0'))
+				else -> append(c)
+			}
+		}
+		append('"')
+	}
+
+	/** DiamWall 用非标准状态码拒答：503 校验中、513 Verifying your browser、517 Access Denied */
+	@VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+	internal fun isDiamWallStatus(statusCode: Int): Boolean =
+		statusCode == HTTP_DIAMWALL_CHECKING || statusCode == HTTP_DIAMWALL_VERIFY || statusCode == HTTP_DIAMWALL_DENIED
+
+	/**
+	 * 200 但内容是挑战页。正常页面带 `<z-bookcard>` / `<z-cover>`，据此优先排除，
+	 * 避免正文里偶然出现 "DiamWall" 字样（例如书名）时误判
+	 */
+	@VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+	internal fun isDiamWallChallenge(doc: Document): Boolean {
+		val title = doc.title()
+		if (DIAMWALL_TITLE_MARKERS.any { title.contains(it, ignoreCase = true) }) {
+			return true
+		}
+		if (doc.selectFirst("z-bookcard, z-cover") != null) {
+			return false
+		}
+		val html = doc.outerHtml()
+		return html.length <= MAX_CHALLENGE_HTML_LENGTH &&
+			DIAMWALL_BODY_MARKERS.any { html.contains(it, ignoreCase = true) }
 	}
 
 	@VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
@@ -138,6 +436,10 @@ internal class ZLibrary(context: ContentLoaderContext) :
 		val languages = filter.tags.mapNotNull { it.key.takeIf { k -> k.startsWith("lang:") }?.substringAfter("lang:") }
 		val extensions = filter.tags.mapNotNull { it.key.takeIf { k -> k.startsWith("fmt:") }?.substringAfter("fmt:") }
 		val contentTypes = filter.tags.mapNotNull { it.key.takeIf { k -> k.startsWith("type:") }?.substringAfter("type:") }
+		if (categoryTag == null && filter.query.isNullOrBlank()) {
+			// /s/?selected_content_types[]=book 现在会 302 到首页，直接在首页取推荐流
+			return "https://$domain/"
+		}
 		return buildString {
 			append("https://").append(domain)
 			if (categoryTag != null) {
@@ -230,6 +532,113 @@ internal class ZLibrary(context: ContentLoaderContext) :
 		}
 		return items
 	}
+
+	/**
+	 * 首页推荐流：优先按 z-bookcard 解析；首页是 SPA 外壳、卡片由客户端渲染时，
+	 * 退一步按 /book/ 链接兜底，至少让浏览列表能出内容
+	 */
+	@VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+	internal fun parseHomeFeed(doc: Document): List<Content> {
+		val viaCards = parseBookList(doc)
+		if (viaCards.isNotEmpty()) {
+			return viaCards
+		}
+		// 首页是 <a href="/book/{hash}/{slug}.html"><z-cover id title author>…</z-cover></a>
+		val viaCovers = parseCoverLinks(doc)
+		return viaCovers.ifEmpty { parseBookLinks(doc) }
+	}
+
+	/**
+	 * 首页形态：书名/作者/书籍 id 都在 <z-cover> 的属性里，链接只提供 href。
+	 * z-cover 的 id 与搜索页 z-bookcard 的 id 是同一套书号，两个入口的内容能对齐
+	 */
+	@VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+	internal fun parseCoverLinks(doc: Document): List<Content> {
+		val items = ArrayList<Content>()
+		val seen = LinkedHashSet<String>()
+		for (cover in doc.select("z-cover")) {
+			val anchor = cover.closest("a[href*=/book/]") ?: continue
+			val href = anchor.attrOrNull("href") ?: continue
+			val bookId = cover.attrOrNull("id")?.trim()?.takeIf(String::isNotEmpty)
+				?: BOOK_ID_REGEX.find(href)?.groupValues?.getOrNull(1)
+				?: continue
+			val title = cover.attrOrNull("title")?.trim()?.takeIf(String::isNotEmpty)
+				?: anchor.textOrNull()
+				?: continue
+			if (!seen.add(bookId)) {
+				continue
+			}
+			val authors = cover.attrOrNull("author")?.let(::parseAuthors).orEmpty()
+			val coverUrl = parseCoverUrl(cover) ?: parseCoverUrl(anchor)
+			items.add(
+				Content(
+					id = generateUid(bookId),
+					title = title,
+					altTitles = emptySet(),
+					url = href,
+					publicUrl = href.toAbsoluteUrl(domain),
+					rating = RATING_UNKNOWN,
+					contentRating = ContentRating.SAFE,
+					coverUrl = coverUrl?.toAbsoluteUrl(domain),
+					tags = emptySet(),
+					state = null,
+					authors = authors,
+					description = null,
+					chapters = null,
+					source = source,
+				),
+			)
+		}
+		return items
+	}
+
+	@VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+	internal fun parseBookLinks(doc: Document): List<Content> {
+		// 同一本书常被链接两次（封面链接 + 标题链接），先按 id 收，再让真标题覆盖 slug 兜底标题
+		val collected = LinkedHashMap<String, Pair<Content, Boolean>>()
+		for (link in doc.select("a[href*=/book/]")) {
+			val href = link.attrOrNull("href") ?: continue
+			val bookId = BOOK_ID_REGEX.find(href)?.groupValues?.getOrNull(1) ?: continue
+			val realTitle = link.textOrNull()
+				?: link.selectFirst("img")?.attrOrNull("alt")?.trim()?.takeIf(String::isNotEmpty)
+				?: link.attrOrNull("title")?.trim()?.takeIf(String::isNotEmpty)
+			val title = realTitle ?: titleFromBookHref(href) ?: continue
+			val cover = link.selectFirst("img")?.let { img -> img.attrOrNull("data-src") ?: img.attrOrNull("src") }
+			val existing = collected[bookId]
+			if (existing == null) {
+				collected[bookId] = Content(
+					id = generateUid(bookId),
+					title = title,
+					altTitles = emptySet(),
+					url = href,
+					publicUrl = href.toAbsoluteUrl(domain),
+					rating = RATING_UNKNOWN,
+					contentRating = ContentRating.SAFE,
+					coverUrl = cover?.toAbsoluteUrl(domain),
+					tags = emptySet(),
+					state = null,
+					authors = emptySet(),
+					description = null,
+					chapters = null,
+					source = source,
+				) to (realTitle == null)
+			} else if (existing.second && realTitle != null) {
+				collected[bookId] = existing.first.copy(title = realTitle) to false
+			} else if (existing.first.coverUrl == null && cover != null) {
+				collected[bookId] = existing.first.copy(coverUrl = cover.toAbsoluteUrl(domain)) to existing.second
+			}
+		}
+		return collected.values.map { it.first }
+	}
+
+	/** 卡片只有封面、没有标题时用详情页 slug 兜底：/book/1/ab/lost-souls.html → lost souls */
+	private fun titleFromBookHref(href: String): String? = href
+		.substringBeforeLast('?')
+		.substringAfterLast('/')
+		.removeSuffix(".html")
+		.replace('-', ' ')
+		.trim()
+		.takeIf(String::isNotEmpty)
 
 	override suspend fun getDetails(manga: Content): Content {
 		val doc = fetchDocument(manga.url.toAbsoluteUrl(domain))
@@ -335,12 +744,6 @@ internal class ZLibrary(context: ContentLoaderContext) :
 	override suspend fun getPageUrl(page: ContentPage): String = page.url
 
 	private fun checkAuth(response: Response) {
-		if (response.code == HTTP_ANTIBOT) {
-			throw ParseException(
-				"Z-Library 反爬墙 (HTTP $HTTP_ANTIBOT)，请在应用内重新打开站点并登录",
-				response.request.url.toString(),
-			)
-		}
 		if (response.request.url.encodedPath.startsWith("/login") || response.request.url.queryParameter("redirectUrl") != null) {
 			throw AuthRequiredException(source)
 		}
@@ -430,8 +833,73 @@ internal class ZLibrary(context: ContentLoaderContext) :
 	)
 
 	private companion object {
-		const val HTTP_ANTIBOT = 517
-		const val HTTP_ANTIBOT_VERIFY = 503
+		// DiamWall 的非标准拒绝码
+		const val HTTP_DIAMWALL_CHECKING = 503
+		const val HTTP_DIAMWALL_VERIFY = 513
+		const val HTTP_DIAMWALL_DENIED = 517
+
+		// 挑战页只有几 KB，正文页远超这个量级；用它把正文扫描限制在真正的挑战页上
+		const val MAX_CHALLENGE_HTML_LENGTH = 64 * 1024
+
+		// 注入 WebView 的取页脚本，返回 [status, responseText]；%URL% 由 fetchInBrowser 填充。
+		// 只有同步 XHR 才能把结果当场带回来，而同步请求不能设 x.timeout（Chromium 抛
+		// InvalidAccessError），所以卡住的情况交给宿主 evaluateJs 的 4s 看门狗
+		const val BROWSER_FETCH_SCRIPT =
+			"(function(){%LANG%try{var x=new XMLHttpRequest();x.open('GET',%URL%,false);x.send(null);" +
+				"return [x.status,x.responseText];}catch(e){return [-1,String(e)];}})()"
+		const val BROWSER_FETCH_URL_SLOT = "%URL%"
+		const val BROWSER_FETCH_LANGUAGE_SLOT = "%LANG%"
+
+		/**
+		 * 在浏览器上下文里找站内语言开关：按语言名匹配元素文本（开关是 JS 渲染、class 名不可靠），
+		 * 顺带把 cookie、localStorage、select、html lang 摊出来。长值截断，只留形态
+		 */
+		const val LANGUAGE_PROBE_SCRIPT = "(function(){try{var o=[],d=document,i,j,el,t;" +
+			"o.push('href='+location.href);" +
+			"o.push('html.lang='+d.documentElement.lang+' nav='+navigator.language);" +
+			"o.push('cookie='+d.cookie.replace(/=[^;]{20,}/g,'=<long>'));" +
+			"var ls=[];for(i=0;i<localStorage.length&&i<12;i++){var k=localStorage.key(i);ls.push(k+'='+String(localStorage.getItem(k)).slice(0,14));}" +
+			"o.push('ls='+ls.join('|'));" +
+			"var sels=d.querySelectorAll('select');" +
+			"for(i=0;i<sels.length&&i<3;i++){var op=[];" +
+			"for(j=0;j<sels[i].options.length&&j<8;j++)op.push(sels[i].options[j].value);" +
+			"o.push('select name='+sels[i].name+' id='+sels[i].id+' val='+sels[i].value+' opts='+op.join('/'));}" +
+			"var names=['Русский','Español','Italiano','中文','Deutsch','Français','Português','English','日本語','한국어','العربية']; " +
+			"var all=d.querySelectorAll('a,button,li,span,div,label,option,summary'),c=0;" +
+			"for(i=0;i<all.length&&c<6;i++){el=all[i];t=(el.textContent||'').trim();" +
+			"if(t.length<15&&names.indexOf(t)>=0&&el.children.length<2){" +
+			"o.push('LANG <'+el.tagName+' class='+(el.className||'')+' href='+(el.getAttribute('href')||'')+' data='+JSON.stringify(el.dataset||{}).slice(0,50)+'>');c++;}}" +
+			"o.push('langHits='+c);" +
+			"return o.join('\\n');}catch(e){return 'probe error: '+e;}})()"
+		val BOOK_ID_REGEX = Regex("/book/([^/?#]+)/")
+
+		const val LANGUAGE_SYSTEM = "system"
+		const val LANGUAGE_ALL = "all"
+		const val DEFAULT_LANGUAGE_ISO = "en"
+		const val LANGUAGE_COOKIE = "siteLanguage"
+		val ISO_LANGUAGE_CODE_REGEX = Regex("[a-z]{2}(-[A-Za-z]{2,4})?")
+
+		/** 站点语言名 ↔ ISO 639-1 语言码 */
+		val LANGUAGE_BY_ISO = mapOf(
+			"en" to "english",
+			"zh" to "chinese",
+			"ja" to "japanese",
+			"ko" to "korean",
+			"ru" to "russian",
+			"es" to "spanish",
+			"fr" to "french",
+			"de" to "german",
+			"it" to "italian",
+			"pt" to "portuguese",
+			"ar" to "arabic",
+			"tr" to "turkish",
+			"pl" to "polish",
+			"nl" to "dutch",
+			"vi" to "vietnamese",
+		)
+		val LANGUAGE_ISO_BY_LANGUAGE_NAME = LANGUAGE_BY_ISO.entries.associate { (iso, name) -> name to iso }
+		val DIAMWALL_TITLE_MARKERS = arrayOf("diamwall", "verifying your browser")
+		val DIAMWALL_BODY_MARKERS = arrayOf("__diamwall", "/.well-known/diamwall/", "cpt.lib", "c_token=")
 		val EXT_PARAM_FIND = Regex("[?&]extension=([a-zA-Z0-9]+)")
 		val FORMAT_LINE_FIND = Regex("Format:\\s*([a-zA-Z0-9]+)")
 		const val MAX_RATING = 5f

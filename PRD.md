@@ -1,5 +1,30 @@
 # 产品需求
 
+## REQ-005：2026-11-09 上游同步
+
+状态：已完成上游合并、423 项离线测试、JVM 构建与 D8 打包，同步分支已推送；插件 1.0.138 已发布且 HTTP 索引与插件哈希核对通过。2026-11-09 用户明确表示未全部检查，授权直接合入主线并在后续处理问题；不记为五个来源均已完整验收，进入主线合并与推送收尾。
+
+### 同步范围与预期
+
+- 将上游 `0d72992c3347418010ef2a44dfdde2f9f6948ab6` 及其相对当前主线新增的 60 个提交合入同步分支，获得本批来源新增、解析修复和测试更新。
+- 保留 REQ-001 的 JM 编号搜索体验、REQ-002 的 NH 阅读与筛选行为，以及 REQ-003 的插件发布方式。
+- 验收版可通过现有插件仓库 URL 更新；自动验证与实际使用验收分别记录。
+
+### 执行证据
+
+- 同步起点：`527c6d6103954ec7e1deabb679da24028789449d`；同步分支：`sync/upstream-2026-11-09`。
+- 对上述两端执行 `git merge-tree --write-tree --name-only` 返回 0 个冲突文件，候选树为 `b816184e754483ca8a994e9ba54fea84f5fc09a6`。
+- `gradlew.bat test` 按本批更新的离线测试类及 JM/NH 回归选择 46 个类：423 项通过，0 失败、0 错误、0 跳过。JM 编号搜索 37 项、NH 解析与 CDN 缓存 24 项、新增 JM 响应解码 2 项均通过；在线集成、审计和 WNACG 真实请求测试未运行。
+- 同次 Gradle 执行 `compileKotlin jar pluginDexClasspath --init-script .github/scripts/plugin-classpath.gradle --no-daemon --console=plain` 成功；D8 9.3.16 使用 `--release --min-api 21` 及 Android 34 API 打包成功，日志无警告。
+- 插件 `build/libs/kototoro-parsers-plugin.jar` 仅含 `classes.dex`，997421 字节，SHA-256 为 `ca186f5873de44478ed73d8ca261ea35feec7a75e5232eb13437cec00fb4f321`。完整测试选择和产物证据保存在已忽略的 `build/sync-validation/verification.json`。
+- `python -B .github/scripts/test_check_upstream.py` 的 31 项、`python -B .github/scripts/test_publish_plugin.py` 的 9 项均通过。
+- 全量合并差异的 `git diff --cached --check` 有 37 处上游自带的空白格式诊断，与上游原始差异完全一致，保留原样；本次新增需求记录检查通过。NH 实现、个人 JM 编号测试及发布/提醒工作流的 Git blob 与合并前一致；来源摘要经 KSP 生成后无额外变化。
+- 源码合并提交 `5d626482fb563311d43657d8af6634ea5ceaa1e4` 已推送到 `origin/sync/upstream-2026-11-09`，父提交分别为本次同步起点和目标上游提交。
+- 通过既有 `publish_plugin.py --artifact build/libs/kototoro-parsers-plugin.jar --expected-sha256 ca186f5873de44478ed73d8ca261ea35feec7a75e5232eb13437cec00fb4f321 --source-ref 5d626482fb563311d43657d8af6634ea5ceaa1e4 --push --verify-base-url https://raw.githubusercontent.com/BarrayAllen0818/kotoyomi-plugins/repo/` 发布 1.0.138；`origin/repo` 由 `fe681da35393aec1e0b902cf891406bc03922bf8` 快进至 `d1988e657185f3f4a665650abfc924fd8c54d917`，返回 `http_verified=true`。
+- 发布候选工作树 `build/plugin-releases/candidate-kazo6hoy` 保留；后续仅记录文档，不重建已发布产物。验收时在 Kotoyomi 更新现有仓库至 1.0.138，检查常用来源，以及 JM 编号搜索、NH 标签筛选与阅读；实际使用结果由用户反馈。
+- 2026-11-09 用户原话：“我没有全部检查，但是可以直接合并了，之后有问题再说”。本次允许在未完整人工验收时合入主线，不改变今后任务的默认验收规则；原自动检查证据继续有效，插件维持 1.0.138，不重复构建发布。
+- 主线合并前复核：JM 的 JSON 响应解码、WN 的合集章节及分类、HA（hanime.tv）的列表/筛选/排序/播放解析有直接修改；NH、HI（Hitomi.La）无直接修改。共享工具仅新增未被这五个来源调用的函数，核心契约、模型和网络模块未修改；线上行为未全部验证，HA 找不到视频流时直接报错仍是已知限制。
+
 ## REQ-001：JM 编号搜索
 
 状态：已完成插件实现、37 个离线测试、JVM 构建及 D8 打包；远端 repo 版本 1.0.135 已发布，用户于 2026-10-05 明确回复“验收通过”，进入主线合并与推送收尾。

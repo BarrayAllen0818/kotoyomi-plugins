@@ -42,6 +42,7 @@ import org.skepsun.kototoro.parsers.model.SortOrder
 import org.skepsun.kototoro.parsers.network.UserAgents
 import org.skepsun.kototoro.parsers.util.generateUid
 import org.skepsun.kototoro.parsers.util.parseRaw
+import org.skepsun.kototoro.parsers.util.parseJson
 import org.skepsun.kototoro.parsers.util.urlEncoded
 import org.skepsun.kototoro.parsers.util.getCookies
 import org.skepsun.kototoro.parsers.util.insertCookies
@@ -614,9 +615,8 @@ internal class JmParser(
                     throw RuntimeException("404 Not Found on $currentDomain")
                 }
 
-                val rawBytes = resp.body.bytes()
-                val body = rawBytes.toString(Charsets.UTF_8)
-                val obj = runCatching { JSONObject(body) }.getOrElse { e ->
+                // ResponseBody.string() 使用 BOM 感知解码，避免把 UTF-8 BOM 当成 JSON 内容。
+                val obj = runCatching { resp.parseJson() }.getOrElse { e ->
                     throw RuntimeException("JM JSON parse failed on $currentDomain, path=$path", e)
                 }
                 

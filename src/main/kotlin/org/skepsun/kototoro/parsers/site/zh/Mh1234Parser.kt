@@ -89,7 +89,14 @@ internal class Mh1234Parser(context: ContentLoaderContext) :
         val url = "https://${domain}$path?key=${keyword.urlEncoded()}"
         val resp = webClient.httpGet(url, getRequestHeaders())
         if (!resp.isSuccessful) return emptyList()
-        return parseList(resp.parseHtml())
+        return parseSearchList(resp.parseHtml())
+    }
+
+    internal fun parseSearchList(doc: Document): List<Content> {
+        // 无匹配时站点只在「推荐漫画」区块 (section.comic-section) 渲染卡片：没有结果卡片，
+        // 直接解析会把固定推荐内容当成搜索结果。排除推荐区块即可得到真实结果。
+        doc.select("section.comic-section").forEach { it.remove() }
+        return parseList(doc)
     }
 
     private fun parseList(doc: Document): List<Content> {
@@ -122,25 +129,31 @@ internal class Mh1234Parser(context: ContentLoaderContext) :
         val resp = webClient.httpGet(detailUrl, getRequestHeaders())
         if (!resp.isSuccessful) return manga
         val doc = resp.parseHtml()
-        val title = doc.selectFirst(".comic-hero__title")?.text()?.trim().orEmpty()
+        val title = doc.selectFirst("#mintWorkTitle, .comic-hero__title")?.text()?.trim().orEmpty()
             .ifEmpty { manga.title }
-        val cover = doc.selectFirst(".comic-hero__image")?.let { it.attr("data-src").ifEmpty { it.attr("src") } }
+        val cover = doc.selectFirst(".mint-work-cover, .comic-hero__image")?.let {
+            it.attr("data-src").ifEmpty { it.attr("src") }
+        }
             ?: manga.coverUrl
-        val desc = doc.selectFirst(".comic-desc")?.text()?.trim().orEmpty()
+        val desc = doc.selectFirst("#mintIntroPanel, .comic-desc")?.text()?.trim().orEmpty()
         
         val metaItems = doc.select(".comic-hero__meta .meta-item")
-        val authors = metaItems.select(":contains(作者)").text().substringAfter("作者：").trim()
-        val tagsFromPage = metaItems.select(":contains(题材)").text().substringAfter("题材：").split(" ").map { it.trim() }.filter { it.isNotEmpty() }
+        val modernMeta = doc.select(".mint-work-info > p")
+        val author = modernMeta.firstOrNull()?.text()?.removeSuffix(" 著")?.trim()
+            ?: metaItems.select(":contains(作者)").text().substringAfter("作者：").trim()
+        val genres = modernMeta.getOrNull(1)?.clone()?.apply { select(".mint-tag").remove() }?.text()
+            ?: metaItems.select(":contains(题材)").text().substringAfter("题材：")
+        val tagsFromPage = genres.split(Regex("\\s+")).filter { it.isNotEmpty() }
 
         val chapters = parseChapters(doc, manga)
         val tagSet = buildSet {
-            if (authors.isNotEmpty()) add(ContentTag(authors, authors, source))
             tagsFromPage.forEach { add(ContentTag(it, it, source)) }
         }
         return manga.copy(
             title = title,
             coverUrl = cover,
             description = desc.ifEmpty { manga.description },
+            authors = if (author.isNotEmpty()) setOf(author) else manga.authors,
             tags = if (tagSet.isNotEmpty()) tagSet else manga.tags,
             chapters = chapters,
             contentRating = manga.contentRating ?: ContentRating.SAFE,
@@ -193,7 +206,9 @@ internal class Mh1234Parser(context: ContentLoaderContext) :
     override suspend fun getPageUrl(page: ContentPage): String = page.url
 
     private fun parseChapters(doc: Document, manga: Content): List<ContentChapter> {
-        val items = doc.select(".chapter-list .chapter-item")
+        // 新版目录倒序输出，恢复阅读顺序；旧版结构仍用于其他站点布局。
+        val modernItems = doc.select(".mint-chapter-grid a[href^=/go/]")
+        val items = if (modernItems.isNotEmpty()) modernItems.reversed() else doc.select(".chapter-list .chapter-item")
         if (items.isEmpty()) return emptyList()
         return items.mapIndexedNotNull { index, a ->
             val href = a.attr("href")
