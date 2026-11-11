@@ -47,6 +47,109 @@ class JmComicTest {
     private val parser = JmParser(JmOfflineContext())
 
     @Test
+    fun `cold context uses persisted successful server before querying settings`() = runTest {
+        val prefs = JmTestPreferences()
+        val first = JmOfflineContext(prefs)
+        val parser = JmParser(first)
+        val card = parser.getList(0, SortOrder.POPULARITY, ContentListFilter(query = "123456")).single()
+        first.imageHandler = { req -> if (req.url.host == "images.jm.invalid") throw SocketException("reset") }
+        first.imageClient(parser).newCall(Request.Builder().url(requireNotNull(card.coverUrl)).build()).execute().close()
+        assertEquals(1, prefs.writes)
+        repeat(3) {
+            first.imageClient(parser).newCall(Request.Builder().url(requireNotNull(card.coverUrl)).build()).execute().close()
+        }
+        assertEquals(1, prefs.writes)
+        val cold = JmOfflineContext(prefs)
+        val restarted = JmParser(cold)
+        val next = restarted.getList(0, SortOrder.POPULARITY, ContentListFilter(query = "123456")).single()
+        assertEquals("https://images2.jm.invalid/media/albums/654321_3x4.jpg", next.coverUrl)
+        cold.imageClient(restarted).newCall(Request.Builder().url(requireNotNull(card.coverUrl)).build()).execute().close()
+        assertTrue(cold.settingRequests.isEmpty())
+        assertEquals("images2.jm.invalid", cold.imageRequests.single().url.host)
+        assertEquals(1, prefs.writes)
+    }
+
+    @Test
+    fun `persisted host failure recovers and replaces it for the next cold context`() = runTest {
+        val prefs = JmTestPreferences()
+        val first = JmOfflineContext(prefs)
+        val parser = JmParser(first)
+        val card = parser.getList(0, SortOrder.POPULARITY, ContentListFilter(query = "123456")).single()
+        first.imageClient(parser).newCall(Request.Builder().url(requireNotNull(card.coverUrl)).build()).execute().close()
+        val cold = JmOfflineContext(prefs)
+        val restarted = JmParser(cold)
+        cold.imageHandler = { req -> if (req.url.host == "images.jm.invalid") throw SocketException("reset") }
+        cold.imageClient(restarted).newCall(Request.Builder().url(requireNotNull(card.coverUrl)).build()).execute().close()
+        assertEquals(listOf("2"), cold.settingRequests.map { it.url.queryParameter("app_img_shunt") })
+        val next = JmParser(JmOfflineContext(prefs))
+            .getList(0, SortOrder.POPULARITY, ContentListFilter(query = "123456")).single()
+        assertEquals("https://images2.jm.invalid/media/albums/654321_3x4.jpg", next.coverUrl)
+    }
+
+    @Test
+    fun `unverified settings and failed images are never persisted`() = runTest {
+        val prefs = JmTestPreferences()
+        val ctx = JmOfflineContext(prefs)
+        val parser = JmParser(ctx)
+        val card = parser.getList(0, SortOrder.POPULARITY, ContentListFilter(query = "123456")).single()
+        assertEquals(0, prefs.writes)
+        ctx.imageStatus = 403
+        ctx.imageClient(parser).newCall(Request.Builder().url(requireNotNull(card.coverUrl)).build()).execute().close()
+        assertEquals(0, prefs.writes)
+        val cold = JmOfflineContext(prefs)
+        JmParser(cold).getList(0, SortOrder.POPULARITY, ContentListFilter(query = "123456"))
+        assertEquals(1, cold.settingRequests.size)
+    }
+
+    @Test
+    fun `persisted server is isolated between automatic and manual choices`() = runTest {
+        val prefs = JmTestPreferences()
+        val ctx = JmOfflineContext(prefs)
+        val parser = JmParser(ctx)
+        val key = mutableListOf<ConfigKey<*>>().also(parser::onCreateConfig)
+            .filterIsInstance<ConfigKey.PreferredImageServer>().single()
+        ctx.config.set(key, "3")
+        val card = parser.getList(0, SortOrder.POPULARITY, ContentListFilter(query = "123456")).single()
+        ctx.imageClient(parser).newCall(Request.Builder().url(requireNotNull(card.coverUrl)).build()).execute().close()
+        val automatic = JmOfflineContext(prefs)
+        val autoCard = JmParser(automatic).getList(0, SortOrder.POPULARITY, ContentListFilter(query = "123456")).single()
+        assertTrue(requireNotNull(autoCard.coverUrl).startsWith("https://images.jm.invalid/"))
+        val manual = JmOfflineContext(prefs)
+        manual.config.set(key, "3")
+        val manualCard = JmParser(manual).getList(0, SortOrder.POPULARITY, ContentListFilter(query = "123456")).single()
+        assertTrue(requireNotNull(manualCard.coverUrl).startsWith("https://images3.jm.invalid/"))
+        assertTrue(manual.settingRequests.isEmpty())
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["not JSON", "{\"img_host\":\"http://images.jm.invalid\",\"shunt\":1}",
+        "{\"img_host\":\"https://user:password@images.jm.invalid\",\"shunt\":1}"])
+    fun `invalid persisted records fall back to the site settings`(record: String) = runTest {
+        val prefs = JmTestPreferences()
+        val first = JmOfflineContext(prefs)
+        val parser = JmParser(first)
+        val card = parser.getList(0, SortOrder.POPULARITY, ContentListFilter(query = "123456")).single()
+        first.imageClient(parser).newCall(Request.Builder().url(requireNotNull(card.coverUrl)).build()).execute().close()
+        prefs.values[prefs.values.keys.single()] = record
+        val cold = JmOfflineContext(prefs)
+        val next = JmParser(cold).getList(0, SortOrder.POPULARITY, ContentListFilter(query = "123456")).single()
+        assertEquals("https://images.jm.invalid/media/albums/654321_3x4.jpg", next.coverUrl)
+        assertEquals(1, cold.settingRequests.size)
+    }
+
+    @Test
+    fun `storage failures do not turn a successful image into an image error`() = runTest {
+        val prefs = JmTestPreferences().apply { unavailable = true }
+        val ctx = JmOfflineContext(prefs)
+        val parser = JmParser(ctx)
+        val card = parser.getList(0, SortOrder.POPULARITY, ContentListFilter(query = "123456")).single()
+        ctx.imageClient(parser).newCall(Request.Builder().url(requireNotNull(card.coverUrl)).build()).execute().use {
+            assertEquals(200, it.code)
+        }
+        assertEquals(1, ctx.settingRequests.size)
+    }
+
+    @Test
     fun `image settings offer automatic and four site shunts with valid query parameters`() = runTest {
         val ctx = JmOfflineContext()
         val parser = JmParser(ctx)
@@ -509,7 +612,9 @@ class JmComicTest {
 }
 
 /** All responses are synthetic; this context never proceeds to the network or loads local credentials. */
-private class JmOfflineContext : ContentLoaderContext() {
+private class JmOfflineContext(private val preferences: JmTestPreferences = JmTestPreferences()) : ContentLoaderContext() {
+    @Suppress("UNUSED_PARAMETER")
+    fun getSourcePreferences(sourceName: String): JmTestPreferenceApi = preferences
     val config = SourceConfigMock()
     val requests: MutableList<Request> = Collections.synchronizedList(mutableListOf())
     val settingRequests: List<Request>
@@ -603,4 +708,33 @@ private class JmOfflineContext : ContentLoaderContext() {
 
     private fun fixture(name: String): String =
         requireNotNull(javaClass.getResource("/fixtures/jm/$name")).readText()
+}
+
+interface JmTestPreferenceApi {
+    fun getString(key: String, default: String?): String?
+    fun edit(): JmTestPreferenceEditor
+}
+
+interface JmTestPreferenceEditor {
+    fun putString(key: String, value: String?): JmTestPreferenceEditor
+    fun apply()
+}
+
+private class JmTestPreferences : JmTestPreferenceApi {
+    val values = mutableMapOf<String, String?>()
+    var writes = 0
+    var unavailable = false
+    override fun getString(key: String, default: String?): String? {
+        check(!unavailable) { "test storage unavailable" }
+        return values[key] ?: default
+    }
+    override fun edit(): JmTestPreferenceEditor = object : JmTestPreferenceEditor {
+        private val pending = mutableMapOf<String, String?>()
+        override fun putString(key: String, value: String?): JmTestPreferenceEditor = apply { pending[key] = value }
+        override fun apply() {
+            check(!unavailable) { "test storage unavailable" }
+            values.putAll(pending)
+            writes++
+        }
+    }
 }

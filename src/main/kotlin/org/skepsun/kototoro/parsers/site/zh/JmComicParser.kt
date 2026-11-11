@@ -69,7 +69,47 @@ import java.io.ByteArrayInputStream
 
 private data class JmImageSettings(val host: String, val shunts: List<Int>)
 
-private class JmImageServerState {
+private fun normalizeJmImageHost(value: String?): String? = value?.toHttpUrlOrNull()?.takeIf {
+    it.isHttps && it.username.isEmpty() && it.password.isEmpty() && it.encodedPath == "/" &&
+        it.query == null && it.fragment == null
+}?.toString()?.trimEnd('/')
+
+/** Optional bridge to the host's existing public per-source SharedPreferences accessor. */
+private class JmImageServerPreferences(
+    private val preferences: Any,
+    private val type: Class<*>,
+    private val key: String,
+) {
+    fun read(): String? = type.getMethod("getString", String::class.java, String::class.java)
+        .invoke(preferences, key, null) as? String
+
+    fun write(value: String) {
+        val edit = type.getMethod("edit")
+        val editor = edit.invoke(preferences)
+        val editorType = edit.returnType
+        editorType.getMethod("putString", String::class.java, String::class.java).invoke(editor, key, value)
+        editorType.getMethod("apply").invoke(editor)
+    }
+
+    companion object {
+        fun create(context: ContentLoaderContext, source: ContentSource, key: String): JmImageServerPreferences? {
+            return try {
+                // The parser API intentionally has no Android dependency. Use the host's public
+                // accessor and the returned interfaces, never Android implementation/private fields.
+                val method = context.javaClass.getMethod("getSourcePreferences", String::class.java)
+                method.isAccessible = true
+                JmImageServerPreferences(method.invoke(context, source.name), method.returnType, key)
+            } catch (_: NoSuchMethodException) {
+                null // Other parser hosts may not provide this optional persistence facility.
+            } catch (e: Exception) {
+                println("JmParser: image server storage unavailable (${e.javaClass.simpleName})")
+                null
+            }
+        }
+    }
+}
+
+private class JmImageServerState(private val preferences: JmImageServerPreferences?) {
     val mutex = Mutex()
     @Volatile var host: String? = null
     @Volatile var goodHost: String? = null
@@ -77,16 +117,57 @@ private class JmImageServerState {
     var shunt: Int = 1
     var shunts: List<Int> = listOf(1, 2, 3, 4)
     var retryAt: Long = 0L
+    private var persisted: String? = null
 
+    init {
+        try {
+            val value = preferences?.read()
+            if (value != null) {
+                val json = JSONObject(value)
+                val savedHost = normalizeJmImageHost(json.getStringOrNull("img_host"))
+                val savedShunt = json.optInt("shunt")
+                if (savedHost != null && savedShunt in 1..4) {
+                    val array = json.optJSONArray("app_shunts")
+                    shunts = (0 until (array?.length() ?: 0)).mapNotNull { index ->
+                        array?.optInt(index)?.takeIf { it in 1..4 }
+                    }.distinct().ifEmpty { listOf(1, 2, 3, 4) }
+                    host = savedHost
+                    shunt = savedShunt
+                    goodHost = savedHost
+                    // A saved address is a first choice, not a live health guarantee. Its real
+                    // image request will either succeed or enter the existing bounded recovery.
+                    goodUntil = Long.MAX_VALUE
+                    persisted = value
+                }
+            }
+        } catch (e: Exception) {
+            println("JmParser: ignored image server record (${e.javaClass.simpleName})")
+        }
+    }
+
+    @Synchronized
     fun accept(setting: JmImageSettings, selected: Int) {
         host = setting.host
         shunt = selected
         shunts = setting.shunts
     }
 
+    @Synchronized
     fun succeeded(value: String) {
         goodHost = value
         goodUntil = System.nanoTime() + 600_000_000_000L
+        if (preferences != null && normalizeJmImageHost(value) != null) {
+            val record = JSONObject().put("img_host", value).put("shunt", shunt)
+                .put("app_shunts", JSONArray(shunts)).toString()
+            if (record != persisted) {
+                try {
+                    preferences.write(record)
+                    persisted = record
+                } catch (e: Exception) {
+                    println("JmParser: image server record not saved (${e.javaClass.simpleName})")
+                }
+            }
+        }
     }
 
     fun usableHost(): String? = goodHost?.takeIf { System.nanoTime() < goodUntil }
@@ -97,9 +178,14 @@ private class JmImageServerState {
         // Values deliberately do not retain that client, so discarded contexts can be collected.
         private val contexts = WeakHashMap<OkHttpClient, MutableMap<String, JmImageServerState>>()
 
-        fun get(client: OkHttpClient, domain: String, selected: String?): JmImageServerState = synchronized(contexts) {
+        fun get(
+            client: OkHttpClient,
+            domain: String,
+            selected: String?,
+            preferences: () -> JmImageServerPreferences?,
+        ): JmImageServerState = synchronized(contexts) {
             contexts.getOrPut(client) { mutableMapOf() }
-                .getOrPut("$domain|${selected.orEmpty()}") { JmImageServerState() }
+                .getOrPut("$domain|${selected.orEmpty()}") { JmImageServerState(preferences()) }
         }
     }
 }
@@ -196,7 +282,13 @@ internal class JmParser(
     )
 
     private val imageState: JmImageServerState
-        get() = JmImageServerState.get(context.httpClient, domain, config[preferredImageServerKey])
+        get() {
+            val selected = config[preferredImageServerKey]
+            val configuredDomain = domain
+            return JmImageServerState.get(context.httpClient, configuredDomain, selected) {
+                JmImageServerPreferences.create(context, source, "jm_image_server_v1:$configuredDomain:${selected ?: "auto"}")
+            }
+        }
 
     override fun onCreateConfig(keys: MutableCollection<ConfigKey<*>>) {
         super.onCreateConfig(keys)
@@ -956,15 +1048,13 @@ internal class JmParser(
         } catch (e: JSONException) {
             throw ParseException("JM image settings: invalid JSON", "https://$activeDomain/setting", e)
         }
-        val host = json.getStringOrNull("img_host")?.toHttpUrlOrNull()?.takeIf {
-            it.isHttps && it.username.isEmpty() && it.password.isEmpty() && it.encodedPath == "/" &&
-                it.query == null && it.fragment == null
-        } ?: throw ParseException("JM image settings: invalid img_host", "https://$activeDomain/setting")
+        val host = normalizeJmImageHost(json.getStringOrNull("img_host"))
+            ?: throw ParseException("JM image settings: invalid img_host", "https://$activeDomain/setting")
         val array = json.optJSONArray("app_shunts")
         val shunts = (0 until (array?.length() ?: 0)).mapNotNull { index ->
             array?.optJSONObject(index)?.optInt("key")?.takeIf { it in 1..4 }
         }.distinct().ifEmpty { listOf(1, 2, 3, 4) }
-        return JmImageSettings(host.toString().trimEnd('/'), shunts)
+        return JmImageSettings(host, shunts)
     }
 
     override val authUrl: String
