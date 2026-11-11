@@ -1,12 +1,19 @@
 package org.skepsun.kototoro.parsers.site.zh
 
 import java.io.IOException
+import java.net.SocketException
+import java.util.Collections
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.security.MessageDigest
 import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
 import kotlinx.coroutines.test.runTest
 import okhttp3.CookieJar
 import okhttp3.HttpUrl
+import okhttp3.Interceptor
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Request
@@ -28,6 +35,7 @@ import org.skepsun.kototoro.parsers.ContentParser
 import org.skepsun.kototoro.parsers.SourceConfigMock
 import org.skepsun.kototoro.parsers.bitmap.Bitmap
 import org.skepsun.kototoro.parsers.config.ContentSourceConfig
+import org.skepsun.kototoro.parsers.config.ConfigKey
 import org.skepsun.kototoro.parsers.model.ContentListFilter
 import org.skepsun.kototoro.parsers.model.ContentSource
 import org.skepsun.kototoro.parsers.model.ContentTag
@@ -37,6 +45,224 @@ import org.skepsun.kototoro.parsers.util.LinkResolver
 class JmComicTest {
 
     private val parser = JmParser(JmOfflineContext())
+
+    @Test
+    fun `image settings offer automatic and four site shunts with valid query parameters`() = runTest {
+        val ctx = JmOfflineContext()
+        val parser = JmParser(ctx)
+        val keys = mutableListOf<ConfigKey<*>>()
+        parser.onCreateConfig(keys)
+        val key = keys.filterIsInstance<ConfigKey.PreferredImageServer>().single()
+        assertNull(key.defaultValue)
+        assertEquals(setOf(null, "1", "2", "3", "4"), key.presetValues.keys)
+        parser.getList(0, SortOrder.POPULARITY, ContentListFilter(query = "123456"))
+        assertEquals("1", ctx.settingRequests.single().url.queryParameter("app_img_shunt"))
+        assertEquals("", ctx.settingRequests.single().url.queryParameter("express"))
+    }
+
+    @Test
+    fun `successful covers do not probe and initialization is shared across parser instances`() = runTest {
+        val ctx = JmOfflineContext()
+        val card = JmParser(ctx).getList(0, SortOrder.POPULARITY, ContentListFilter(query = "123456")).single()
+        val second = JmParser(ctx)
+        second.getList(0, SortOrder.POPULARITY, ContentListFilter(query = "123456"))
+        ctx.imageClient(second).newCall(Request.Builder().url(requireNotNull(card.coverUrl)).build()).execute().use {
+            assertEquals(200, it.code)
+        }
+        assertEquals(1, ctx.settingRequests.size)
+        assertEquals(1, ctx.imageRequests.size)
+    }
+
+    @Test
+    fun `failed cover switches shunt preserving path and next cards reuse the successful server`() = runTest {
+        val ctx = JmOfflineContext()
+        ctx.imageHandler = { req -> if (req.url.host == "images.jm.invalid") throw SocketException("Connection reset") }
+        val parser = JmParser(ctx)
+        val card = parser.getList(0, SortOrder.POPULARITY, ContentListFilter(query = "123456")).single()
+        val client = ctx.imageClient(JmParser(ctx))
+        client.newCall(Request.Builder().url(requireNotNull(card.coverUrl)).build()).execute().use { assertEquals(200, it.code) }
+        assertEquals(listOf("1", "2"), ctx.settingRequests.map { it.url.queryParameter("app_img_shunt") })
+        assertEquals(listOf("images.jm.invalid", "images2.jm.invalid"), ctx.imageRequests.map { it.url.host })
+        assertTrue(ctx.imageRequests.all { it.url.encodedPath == "/media/albums/654321_3x4.jpg" })
+        client.newCall(Request.Builder().url("https://images.jm.invalid/media/albums/777777_3x4.jpg").build())
+            .execute().close()
+        assertEquals("images2.jm.invalid", ctx.imageRequests.last().url.host)
+        assertEquals(2, ctx.settingRequests.size)
+        val next = JmParser(ctx).getList(0, SortOrder.POPULARITY, ContentListFilter(query = "123456")).single()
+        assertEquals("https://images2.jm.invalid/media/albums/654321_3x4.jpg", next.coverUrl)
+    }
+
+    @Test
+    fun `automatic recovery is bounded and exhausted group is not repeated within a minute`() = runTest {
+        val ctx = JmOfflineContext()
+        ctx.imageHandler = { throw SocketException("Connection reset") }
+        val parser = JmParser(ctx)
+        val card = parser.getList(0, SortOrder.POPULARITY, ContentListFilter(query = "123456")).single()
+        val client = ctx.imageClient(parser)
+        repeat(2) {
+            assertInstanceOf(SocketException::class.java, runCatching {
+                client.newCall(Request.Builder().url(requireNotNull(card.coverUrl)).build()).execute()
+            }.exceptionOrNull())
+        }
+        assertEquals(listOf("1", "2", "3", "4"), ctx.settingRequests.map { it.url.queryParameter("app_img_shunt") })
+        assertEquals(5, ctx.imageRequests.size)
+    }
+
+    @Test
+    fun `manual shunt is respected on already generated cards and never automatically switches`() = runTest {
+        val ctx = JmOfflineContext()
+        val parser = JmParser(ctx)
+        val card = parser.getList(0, SortOrder.POPULARITY, ContentListFilter(query = "123456")).single()
+        val keys = mutableListOf<ConfigKey<*>>().also(parser::onCreateConfig)
+        ctx.config.set(keys.filterIsInstance<ConfigKey.PreferredImageServer>().single(), "3")
+        ctx.imageHandler = { throw SocketException("Connection reset") }
+        assertInstanceOf(SocketException::class.java, runCatching {
+            ctx.imageClient(parser).newCall(Request.Builder().url(requireNotNull(card.coverUrl)).build()).execute()
+        }.exceptionOrNull())
+        assertEquals(listOf("1", "3"), ctx.settingRequests.map { it.url.queryParameter("app_img_shunt") })
+        assertEquals(listOf("images3.jm.invalid"), ctx.imageRequests.map { it.url.host })
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = [401, 403, 404, 429, 503])
+    fun `HTTP errors do not trigger image shunt recovery`(code: Int) = runTest {
+        val ctx = JmOfflineContext().apply { imageStatus = code }
+        val parser = JmParser(ctx)
+        val card = parser.getList(0, SortOrder.POPULARITY, ContentListFilter(query = "123456")).single()
+        ctx.imageClient(parser).newCall(Request.Builder().url(requireNotNull(card.coverUrl)).build()).execute().use {
+            assertEquals(code, it.code)
+        }
+        assertEquals(1, ctx.settingRequests.size)
+        assertEquals(1, ctx.imageRequests.size)
+    }
+
+    @Test
+    fun `cancelled image and non transport failures never start shunt queries`() = runTest {
+        val ctx = JmOfflineContext()
+        val parser = JmParser(ctx)
+        val card = parser.getList(0, SortOrder.POPULARITY, ContentListFilter(query = "123456")).single()
+        val client = ctx.imageClient(parser)
+        val call = client.newCall(Request.Builder().url(requireNotNull(card.coverUrl)).build())
+        ctx.imageHandler = { call.cancel(); throw SocketException("Socket closed") }
+        runCatching { call.execute() }
+        ctx.imageHandler = { throw IOException("unrelated IO failure") }
+        runCatching { client.newCall(Request.Builder().url(requireNotNull(card.coverUrl)).build()).execute() }
+        assertEquals(1, ctx.settingRequests.size)
+    }
+
+    @Test
+    fun `failed initialization can retry without marking a default server as initialized`() = runTest {
+        val ctx = JmOfflineContext().apply { settingBody = { "{}" } }
+        val parser = JmParser(ctx)
+        parser.getList(0, SortOrder.POPULARITY, ContentListFilter(query = "123456"))
+        ctx.settingBody = ctx::defaultSetting
+        val card = parser.getList(0, SortOrder.POPULARITY, ContentListFilter(query = "123456")).single()
+        assertEquals("https://images.jm.invalid/media/albums/654321_3x4.jpg", card.coverUrl)
+        assertEquals(2, ctx.settingRequests.size)
+    }
+
+    @Test
+    fun `concurrent parser instances share one recovery rather than querying for each card`() = runTest {
+        val ctx = JmOfflineContext()
+        val parser = JmParser(ctx)
+        val card = parser.getList(0, SortOrder.POPULARITY, ContentListFilter(query = "123456")).single()
+        val firstAttempts = CountDownLatch(4)
+        ctx.imageHandler = { req ->
+            if (req.url.host == "images.jm.invalid") {
+                firstAttempts.countDown()
+                check(firstAttempts.await(5, TimeUnit.SECONDS))
+                throw SocketException("Connection reset")
+            }
+        }
+        val executor = Executors.newFixedThreadPool(4)
+        try {
+            val futures = (1..4).map {
+                executor.submit<Int> {
+                    ctx.imageClient(JmParser(ctx)).newCall(Request.Builder().url(requireNotNull(card.coverUrl)).build())
+                        .execute().use { it.code }
+                }
+            }
+            assertEquals(listOf(200, 200, 200, 200), futures.map { it.get(8, TimeUnit.SECONDS) })
+        } finally {
+            executor.shutdownNow()
+        }
+        assertEquals(2, ctx.settingRequests.size)
+        assertEquals(4, ctx.imageRequests.count { it.url.host == "images2.jm.invalid" })
+    }
+
+    @Test
+    fun `duplicate hosts are not requested again and a third fallback may succeed`() = runTest {
+        val ctx = JmOfflineContext()
+        val parser = JmParser(ctx)
+        val card = parser.getList(0, SortOrder.POPULARITY, ContentListFilter(query = "123456")).single()
+        ctx.settingBody = { req ->
+            if (req.url.queryParameter("app_img_shunt") == "2") """{"img_host":"https://images.jm.invalid"}"""
+            else ctx.defaultSetting(req)
+        }
+        ctx.imageHandler = { req -> if (req.url.host != "images4.jm.invalid") throw SocketException("reset") }
+        ctx.imageClient(parser).newCall(Request.Builder().url(requireNotNull(card.coverUrl)).build()).execute().use {
+            assertEquals(200, it.code)
+        }
+        assertEquals(listOf("1", "2", "3", "4"), ctx.settingRequests.map { it.url.queryParameter("app_img_shunt") })
+        assertEquals(listOf("images.jm.invalid", "images3.jm.invalid", "images4.jm.invalid"),
+            ctx.imageRequests.map { it.url.host })
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = [401, 403, 429])
+    fun `settings permission and rate limit errors stop and share the pause`(status: Int) = runTest {
+        val ctx = JmOfflineContext()
+        val parser = JmParser(ctx)
+        val card = parser.getList(0, SortOrder.POPULARITY, ContentListFilter(query = "123456")).single()
+        ctx.settingStatus = status
+        ctx.imageHandler = { throw SocketException("reset") }
+        repeat(2) {
+            val error = runCatching {
+                ctx.imageClient(JmParser(ctx)).newCall(Request.Builder().url(requireNotNull(card.coverUrl)).build()).execute()
+            }.exceptionOrNull()
+            assertInstanceOf(IOException::class.java, error)
+            if (it == 0) {
+                if (status == 401) assertInstanceOf(AuthRequiredException::class.java, error)
+                else assertEquals(status, assertInstanceOf(org.jsoup.HttpStatusException::class.java, error).statusCode)
+            }
+        }
+        assertEquals(2, ctx.settingRequests.size)
+        assertEquals(2, ctx.imageRequests.size)
+    }
+
+    @Test
+    fun `cancellation during recovery does not start another shunt or poison later recovery`() = runTest {
+        val ctx = JmOfflineContext()
+        val parser = JmParser(ctx)
+        val card = parser.getList(0, SortOrder.POPULARITY, ContentListFilter(query = "123456")).single()
+        val client = ctx.imageClient(parser)
+        val call = client.newCall(Request.Builder().url(requireNotNull(card.coverUrl)).build())
+        ctx.imageHandler = { req -> if (req.url.host == "images.jm.invalid") throw SocketException("reset") }
+        ctx.settingBody = { req -> call.cancel(); ctx.defaultSetting(req) }
+        assertInstanceOf(IOException::class.java, runCatching { call.execute() }.exceptionOrNull())
+        assertEquals(2, ctx.settingRequests.size)
+        assertEquals(1, ctx.imageRequests.size)
+        ctx.settingBody = ctx::defaultSetting
+        client.newCall(Request.Builder().url(requireNotNull(card.coverUrl)).build()).execute().close()
+        assertEquals(3, ctx.settingRequests.size)
+        assertEquals("images2.jm.invalid", ctx.imageRequests.last().url.host)
+    }
+
+    @Test
+    fun `invalid image settings are skipped within the same bounded recovery`() = runTest {
+        val ctx = JmOfflineContext()
+        val parser = JmParser(ctx)
+        val card = parser.getList(0, SortOrder.POPULARITY, ContentListFilter(query = "123456")).single()
+        ctx.imageHandler = { req -> if (req.url.host == "images.jm.invalid") throw SocketException("reset") }
+        ctx.settingBody = { req -> when (req.url.queryParameter("app_img_shunt")) {
+            "2" -> """{"img_host":"https://user:password@example.invalid/"}"""
+            "3" -> "not JSON"
+            else -> ctx.defaultSetting(req)
+        } }
+        ctx.imageClient(parser).newCall(Request.Builder().url(requireNotNull(card.coverUrl)).build()).execute().close()
+        assertEquals(4, ctx.settingRequests.size)
+        assertEquals(listOf("images.jm.invalid", "images4.jm.invalid"), ctx.imageRequests.map { it.url.host })
+    }
 
     @Test
     fun `ordinary search keeps keywords tags sorting and list mapping`() = runTest {
@@ -285,7 +511,28 @@ class JmComicTest {
 /** All responses are synthetic; this context never proceeds to the network or loads local credentials. */
 private class JmOfflineContext : ContentLoaderContext() {
     val config = SourceConfigMock()
-    val requests = mutableListOf<Request>()
+    val requests: MutableList<Request> = Collections.synchronizedList(mutableListOf())
+    val settingRequests: List<Request>
+        get() = synchronized(requests) { requests.filter { it.url.encodedPath == "/setting" } }
+    val imageRequests: List<Request>
+        get() = synchronized(requests) { requests.filter { it.url.encodedPath.startsWith("/media/albums/") } }
+    var settingBody: (Request) -> String = ::defaultSetting
+    var imageHandler: (Request) -> Unit = {}
+    var imageStatus: Int = 200
+    var settingStatus: Int = 200
+
+    fun defaultSetting(request: Request): String {
+        val shunt = request.url.queryParameter("app_img_shunt")?.toIntOrNull() ?: 1
+        val host = if (shunt == 1) "images.jm.invalid" else "images$shunt.jm.invalid"
+        return JSONObject().put("img_host", "https://$host")
+            .put("app_shunts", org.json.JSONArray((1..4).map { JSONObject().put("key", it).put("title", "图源$it") }))
+            .toString()
+    }
+
+    fun imageClient(parser: JmParser): OkHttpClient = OkHttpClient.Builder()
+        .addInterceptor(parser)
+        .addInterceptor(responder)
+        .build()
     val businessRequests: List<Request>
         get() = requests.filter { it.url.encodedPath in setOf("/album", "/search") }
     var albumBody: String = fixture("album.json")
@@ -293,14 +540,20 @@ private class JmOfflineContext : ContentLoaderContext() {
     var albumStatus: Int = 200
 
     override val cookieJar: CookieJar = CookieJar.NO_COOKIES
-    override val httpClient: OkHttpClient = OkHttpClient.Builder()
-        .cookieJar(cookieJar)
-        .addInterceptor { chain ->
+    private val responder = Interceptor { chain ->
             val request = chain.request()
             requests += request
+            if (request.url.encodedPath.startsWith("/media/albums/")) {
+                imageHandler(request)
+                return@Interceptor Response.Builder().request(request).protocol(Protocol.HTTP_1_1)
+                    .code(imageStatus).message("offline image")
+                    .header("Content-Type", "image/jpeg")
+                    .body(byteArrayOf(0xff.toByte(), 0xd8.toByte(), 0xff.toByte())
+                        .toResponseBody("image/jpeg".toMediaType())).build()
+            }
             val body = when (request.url.encodedPath) {
                 "/newsvr-2025.txt" -> encrypt("""{"Server":["api.jm.invalid"]}""", "diosfjckwpqpdfjkvnqQjsik")
-                "/setting" -> envelope(request, """{"img_host":"https://images.jm.invalid"}""")
+                "/setting" -> envelope(request, settingBody(request))
                 "/search" -> envelope(request, fixture("search.json"))
                 "/album" -> {
                     albumFailure?.invoke()
@@ -311,11 +564,14 @@ private class JmOfflineContext : ContentLoaderContext() {
             Response.Builder()
                 .request(request)
                 .protocol(Protocol.HTTP_1_1)
-                .code(200)
+                .code(if (request.url.encodedPath == "/setting") settingStatus else 200)
                 .message("OK")
                 .body(body.toResponseBody())
                 .build()
         }
+    override val httpClient: OkHttpClient = OkHttpClient.Builder()
+        .cookieJar(cookieJar)
+        .addInterceptor(responder)
         .build()
 
     override fun getConfig(source: ContentSource): ContentSourceConfig = config

@@ -1,12 +1,21 @@
 package org.skepsun.kototoro.parsers.site.zh
 
 import java.security.MessageDigest
+import java.io.IOException
+import java.net.SocketException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.util.EnumSet
+import java.util.WeakHashMap
 import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
 import kotlin.math.min
 import kotlin.random.Random
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.Headers
 import okhttp3.Interceptor
 import okhttp3.Response
@@ -48,6 +57,8 @@ import org.skepsun.kototoro.parsers.util.getCookies
 import org.skepsun.kototoro.parsers.util.insertCookies
 import org.skepsun.kototoro.parsers.util.await
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.OkHttpClient
 import org.skepsun.kototoro.parsers.bitmap.Rect
 import java.util.zip.GZIPInputStream
 import okhttp3.FormBody
@@ -55,6 +66,43 @@ import okhttp3.Request
 import org.skepsun.kototoro.parsers.model.ContentSource
 import org.skepsun.kototoro.parsers.network.GZipOptions
 import java.io.ByteArrayInputStream
+
+private data class JmImageSettings(val host: String, val shunts: List<Int>)
+
+private class JmImageServerState {
+    val mutex = Mutex()
+    @Volatile var host: String? = null
+    @Volatile var goodHost: String? = null
+    @Volatile var goodUntil: Long = 0L
+    var shunt: Int = 1
+    var shunts: List<Int> = listOf(1, 2, 3, 4)
+    var retryAt: Long = 0L
+
+    fun accept(setting: JmImageSettings, selected: Int) {
+        host = setting.host
+        shunt = selected
+        shunts = setting.shunts
+    }
+
+    fun succeeded(value: String) {
+        goodHost = value
+        goodUntil = System.nanoTime() + 600_000_000_000L
+    }
+
+    fun usableHost(): String? = goodHost?.takeIf { System.nanoTime() < goodUntil }
+
+    companion object {
+        const val FAILURE_PAUSE_NANOS = 60_000_000_000L
+        // The HTTP client belongs to one loader context (including its network configuration).
+        // Values deliberately do not retain that client, so discarded contexts can be collected.
+        private val contexts = WeakHashMap<OkHttpClient, MutableMap<String, JmImageServerState>>()
+
+        fun get(client: OkHttpClient, domain: String, selected: String?): JmImageServerState = synchronized(contexts) {
+            contexts.getOrPut(client) { mutableMapOf() }
+                .getOrPut("$domain|${selected.orEmpty()}") { JmImageServerState() }
+        }
+    }
+}
 
 /**
  * JM (禁漫天堂) API-based parser.
@@ -129,9 +177,9 @@ internal class JmParser(
         "www.cdnutc.me",
     )
     private var activeDomain: String = apiDomains.first()
-    private var imageHost: String = "https://cdn-msp.jmapinodeudzn.net"
+    private val imageHost: String
+        get() = imageState.host ?: "https://cdn-msp.jmapinodeudzn.net"
     private var domainsInitialized = false
-    private var imageHostInitialized = false
     private var lastLoginEmail: String? = null
 
     override val faviconDomain: String
@@ -142,9 +190,18 @@ internal class JmParser(
     )
     override val userAgentKey = ConfigKey.UserAgent(UserAgents.JM_WEBVIEW)
 
+    private val preferredImageServerKey = ConfigKey.PreferredImageServer(
+        presetValues = linkedMapOf(null to null, "1" to "图源1", "2" to "图源2", "3" to "图源3", "4" to "图源4"),
+        defaultValue = null,
+    )
+
+    private val imageState: JmImageServerState
+        get() = JmImageServerState.get(context.httpClient, domain, config[preferredImageServerKey])
+
     override fun onCreateConfig(keys: MutableCollection<ConfigKey<*>>) {
         super.onCreateConfig(keys)
         keys.add(userAgentKey)
+        keys.add(preferredImageServerKey)
     }
 
     private val webDomains = listOf(
@@ -525,7 +582,9 @@ internal class JmParser(
         val url = req.url.toString()
         val path = req.url.encodedPath
         val isImage = path.contains("/media/photos/")
-        return if (isImage) {
+        return if (req.method == "GET" && Regex("^/media/albums/[0-9]+_3x4\\.jpg$").matches(path)) {
+            interceptCover(chain)
+        } else if (isImage) {
             val newReq = req.newBuilder()
                 .headers(imageHeaders(req.header("Accept")))
                 .build()
@@ -540,6 +599,113 @@ internal class JmParser(
             }
         } else {
             chain.proceed(req)
+        }
+    }
+
+    private fun interceptCover(chain: Interceptor.Chain): Response {
+        val state = imageState
+        val selected = config[preferredImageServerKey]
+        fun checkCancelled() {
+            if (chain.call().isCanceled()) throw IOException("Canceled")
+        }
+        fun requestAt(host: String): Request {
+            val base = host.toHttpUrl()
+            return chain.request().newBuilder().url(chain.request().url.newBuilder()
+                .scheme(base.scheme).host(base.host).port(base.port).build()).build()
+        }
+        fun proceed(host: String): Response {
+            checkCancelled()
+            return chain.proceed(requestAt(host))
+        }
+        fun isRecoverable(e: IOException): Boolean = !chain.call().isCanceled() &&
+            (e is SocketException || e is UnknownHostException || e is SocketTimeoutException)
+        // This is an application interceptor: settings and fallback images remain in the original
+        // call, so its deadline/cancellation still bounds the complete recovery operation.
+        fun <T> locked(block: () -> T): T = runBlocking {
+            while (!state.mutex.tryLock()) {
+                checkCancelled()
+                delay(25)
+            }
+            try { checkCancelled(); block() } finally { state.mutex.unlock() }
+        }
+        fun load(shunt: Int): JmImageSettings {
+            checkCancelled()
+            val now = (System.currentTimeMillis() / 1000).toString()
+            val request = Request.Builder().url(imageSettingUrl(shunt)).headers(apiHeaders(now)).build()
+            val text = chain.proceed(request).use { response ->
+                if (response.code == 401) throw AuthRequiredException(source)
+                if (!response.isSuccessful) throw org.jsoup.HttpStatusException(
+                    "JM image settings HTTP ${response.code}", response.code, request.url.toString(),
+                )
+                val json = response.parseJson()
+                val status = json.optInt("status", json.optInt("code", 0))
+                if (status == 401) throw AuthRequiredException(source)
+                if (status != 200) throw IOException("JM image settings status $status")
+                convertData(json.getString("data"), "$now$dataSecret")
+            }
+            return parseImageSettings(text)
+        }
+        if (selected != null && state.host == null) {
+            locked {
+                if (state.host == null) state.accept(load(selected.toInt()), selected.toInt())
+            }
+        }
+        val originalHost = chain.request().url.newBuilder().encodedPath("/").query(null).fragment(null)
+            .build().toString().trimEnd('/')
+        val host = if (selected != null) state.host ?: originalHost else state.usableHost() ?: originalHost
+        val failure = try {
+            return proceed(host).also { response ->
+                if (response.isSuccessful && response.header("Content-Type").orEmpty().startsWith("image/")) {
+                    state.succeeded(host)
+                }
+            }
+        } catch (e: IOException) {
+            if (selected != null || !isRecoverable(e)) throw e
+            e
+        }
+        return locked {
+            val shared = state.usableHost()
+            if (shared != null && shared != host) return@locked proceed(shared)
+            if (state.retryAt > System.nanoTime()) throw failure
+            state.goodHost = null
+            val tried = mutableSetOf(host)
+            val originalShunt = state.shunt
+            var last = failure
+            try {
+                for (shunt in state.shunts.filter { it != originalShunt }.take(3)) {
+                    checkCancelled()
+                    val setting = try {
+                        load(shunt)
+                    } catch (e: IOException) {
+                        if (!isRecoverable(e)) throw e
+                        last = e
+                        continue
+                    } catch (_: ParseException) {
+                        continue
+                    }
+                    if (!tried.add(setting.host)) continue
+                    try {
+                        val response = proceed(setting.host)
+                        // HTTP permission/limit errors must reach the host; they are not evidence of
+                        // an unreachable image server and must not advance to another shunt.
+                        if (response.isSuccessful && response.header("Content-Type").orEmpty().startsWith("image/")) {
+                            state.accept(setting, shunt)
+                            state.succeeded(setting.host)
+                        }
+                        return@locked response
+                    } catch (e: IOException) {
+                        if (!isRecoverable(e)) throw e
+                        last = e
+                    }
+                }
+                throw last
+            } finally {
+                // Share failures, including permission/limit responses, after the attempt ends.
+                // Cancellation leaves a later foreground request free to recover immediately.
+                if (!chain.call().isCanceled() && state.usableHost() == null) {
+                    state.retryAt = System.nanoTime() + JmImageServerState.FAILURE_PAUSE_NANOS
+                }
+            }
         }
     }
 
@@ -595,8 +761,8 @@ internal class JmParser(
         return res
     }
 
-    private suspend fun apiGet(path: String, retries: Int = 3): String {
-        ensureDomains()
+    private suspend fun apiGet(path: String, retries: Int = 3, initializeImages: Boolean = true): String {
+        ensureDomains(initializeImages)
         var attempt = 0
         var delayMs = 800L + Random.nextLong(0, 400)
         var last: Exception? = null
@@ -731,7 +897,7 @@ internal class JmParser(
         return s.replace("\\s+".toRegex(), "")
     }
 
-    private suspend fun ensureDomains() {
+    private suspend fun ensureDomains(initializeImages: Boolean = true) {
         if (!domainsInitialized) {
             domainsInitialized = true
             runCatching {
@@ -758,21 +924,47 @@ internal class JmParser(
             }
         }
         applyConfiguredDomain()
-        if (!imageHostInitialized) {
-            imageHostInitialized = true
-            runCatching { refreshImageHost() }
+        if (initializeImages) {
+            try {
+                refreshImageHost(force = false)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Keep initialization retryable; a fallback URL is not a validated setting.
+            }
         }
     }
 
-    private suspend fun refreshImageHost() {
-        val res = apiGet("/setting?app_img_shunt=1?express=")
-        runCatching {
-            val json = JSONObject(res)
-            val host = json.optString("img_host")
-            if (!host.isNullOrBlank()) {
-                imageHost = host
-            }
+    private suspend fun refreshImageHost(force: Boolean = true) {
+        val state = imageState
+        state.mutex.withLock {
+            if (!force && state.host != null) return
+            val shunt = config[preferredImageServerKey]?.toIntOrNull() ?: 1
+            val res = apiGet(imageSettingUrl(shunt), initializeImages = false)
+            state.accept(parseImageSettings(res), shunt)
         }
+    }
+
+    private fun imageSettingUrl(shunt: Int): String = "https://$activeDomain/setting".toHttpUrl().newBuilder()
+        .addQueryParameter("app_img_shunt", shunt.toString())
+        .addQueryParameter("express", "")
+        .build().toString()
+
+    private fun parseImageSettings(text: String): JmImageSettings {
+        val json = try {
+            JSONObject(text)
+        } catch (e: JSONException) {
+            throw ParseException("JM image settings: invalid JSON", "https://$activeDomain/setting", e)
+        }
+        val host = json.getStringOrNull("img_host")?.toHttpUrlOrNull()?.takeIf {
+            it.isHttps && it.username.isEmpty() && it.password.isEmpty() && it.encodedPath == "/" &&
+                it.query == null && it.fragment == null
+        } ?: throw ParseException("JM image settings: invalid img_host", "https://$activeDomain/setting")
+        val array = json.optJSONArray("app_shunts")
+        val shunts = (0 until (array?.length() ?: 0)).mapNotNull { index ->
+            array?.optJSONObject(index)?.optInt("key")?.takeIf { it in 1..4 }
+        }.distinct().ifEmpty { listOf(1, 2, 3, 4) }
+        return JmImageSettings(host.toString().trimEnd('/'), shunts)
     }
 
     override val authUrl: String

@@ -19,7 +19,7 @@ class JmComicResponseTest {
     fun `parse encrypted API responses with and without a UTF-8 BOM`(withBom: Boolean) = runBlocking {
         val ctx = OfflineContentLoaderContext(mapOf(
             "https://rup4a04-c02.tos-cn-hongkong.bytepluses.com/newsvr-2025.txt" to "jmcomic/domains.json",
-            "https://www.cdnhjk.net/setting?app_img_shunt=1?express=" to "jmcomic/setting.json",
+            "https://www.cdnhjk.net/setting?app_img_shunt=1&express=" to "jmcomic/setting.json",
             "https://www.cdnhjk.net/promote?page=0&o=mr" to "jmcomic/list.json",
             "https://www.cdnhjk.net/album?id=100" to "jmcomic/detail.json",
             "https://www.cdnhjk.net/chapter?id=101" to "jmcomic/chapter.json",
