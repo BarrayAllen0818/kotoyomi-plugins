@@ -85,14 +85,14 @@ class NhentaiParserTest {
         val parser = NhentaiParser(ctx).also { ctx.parser = it }
         val filters = listOf(
             ContentListFilter() to "/",
-            ContentListFilter(query = "sample query") to "/search/",
+            ContentListFilter(query = "sample query") to "/api/v2/search",
             ContentListFilter(tags = setOf(ContentTag("中文", "language:chinese", parser.source))) to "/language/chinese/",
             ContentListFilter(tags = setOf(ContentTag("Sample Tag", "tag:1", parser.source))) to "/tag/sample-tag/",
         )
         for (order in parser.availableSortOrders) {
             for ((filter, path) in filters) {
                 parser.getListPage(2, order, filter)
-                val url = ctx.requests.last().url
+                val url = ctx.requests.last { it.url.encodedPath != "/api/v2/cdn" }.url
                 val expectedPath = if (path == "/" && order != SortOrder.NEWEST) "/search/" else path
                 assertEquals(expectedPath, url.encodedPath)
                 assertEquals("2", url.queryParameter("page"))
@@ -101,8 +101,167 @@ class NhentaiParserTest {
                     SortOrder.POPULARITY_WEEK -> "popular-week"
                     SortOrder.POPULARITY_MONTH -> "popular-month"
                     SortOrder.POPULARITY -> "popular"
-                    else -> null
+                    else -> if (filter.query != null) "date" else null
                 }, url.queryParameter("sort"))
+            }
+        }
+    }
+
+    @Test
+    fun `keyword search uses v2 data and retains identities titles thumbnails and languages`() = runBlocking {
+        val ctx = NhOfflineContext()
+        val parser = NhentaiParser(ctx).also { ctx.parser = it }
+        val filter = ContentListFilter(
+            query = "全彩 +&猫",
+            tags = setOf(ContentTag("中文", "language:chinese", parser.source)),
+        )
+        val items = parser.getList(0, SortOrder.NEWEST, filter)
+        val request = ctx.requests.first()
+        assertEquals("/api/v2/search", request.url.encodedPath)
+        assertEquals("全彩 +&猫", request.url.queryParameter("query"))
+        assertEquals("1", request.url.queryParameter("page"))
+        assertEquals("date", request.url.queryParameter("sort"))
+        assertEquals("https://nhentai.net/", request.header("Referer"))
+        assertEquals(listOf("42", "43", "44"), items.map { it.url })
+        assertEquals(listOf("42", "43", "44").map { parser.generateUid(it) }, items.map { it.id })
+        assertEquals(listOf("全彩 Fixture", "日本語 Fixture", "English Fixture"), items.map { it.title })
+        assertEquals(listOf("中文", "日本語", "English"), items.map { it.description })
+        assertEquals("https://t1.nhentai.net/galleries/42/thumb.webp", items[0].coverUrl)
+        assertEquals("https://thumb.test/43.webp", items[1].coverUrl)
+        assertTrue(items.all { it.publicUrl == "https://nhentai.net/g/${it.url}" && it.source == parser.source })
+        assertEquals(listOf("/api/v2/search", "/api/v2/cdn"), ctx.requests.map { it.url.encodedPath })
+        parser.getList(items.size, SortOrder.NEWEST, filter)
+        assertEquals("2", ctx.requests.last().url.queryParameter("page"))
+    }
+
+    @Test
+    fun `successful empty search avoids CDN but broken responses never become empty results`() = runBlocking {
+        val ctx = NhOfflineContext()
+        val parser = NhentaiParser(ctx)
+        val filter = ContentListFilter(query = "全彩")
+        ctx.search = """{"result":[],"num_pages":0,"per_page":25,"total":0}"""
+        assertTrue(parser.getListPage(1, SortOrder.NEWEST, filter).isEmpty())
+        assertEquals(listOf("/api/v2/search"), ctx.requests.map { it.url.encodedPath })
+        for (body in listOf("invalid JSON", "{}", """{"result":null}""", """{"result":{}}""",
+            """{"error":"Search failed","result":[]}""")) {
+            ctx.search = body
+            val error = assertThrows(ParseException::class.java) { runBlocking {
+                parser.getListPage(1, SortOrder.NEWEST, filter)
+            } }
+            assertTrue(error.message.orEmpty().contains("NH search"))
+            assertEquals("/api/v2/search", ctx.requests.last().url.encodedPath)
+        }
+        assertTrue(ctx.requests.none { it.url.encodedPath != "/api/v2/search" })
+    }
+
+    @Test
+    fun `malformed search entries fail rather than silently dropping works`() = runBlocking {
+        val base = """{"id":42,"english_title":"Fixture","thumbnail":"https://thumb.test/42.webp","tag_ids":[]}"""
+        val variants = listOf(
+            JSONObject(base).put("id", 0),
+            JSONObject(base).put("id", 1.5),
+            JSONObject(base).put("id", "42x"),
+            JSONObject(base).put("english_title", JSONObject.NULL),
+            JSONObject(base).put("thumbnail", ""),
+            JSONObject(base).put("thumbnail", "http://thumb.test/42.webp"),
+        ).map { it.toString() } + listOf("null", "42")
+        for (entry in variants) {
+            val ctx = NhOfflineContext().apply { search = """{"result":[$entry]}""" }
+            val parser = NhentaiParser(ctx)
+            val error = assertThrows(ParseException::class.java) { runBlocking {
+                parser.getListPage(1, SortOrder.NEWEST, ContentListFilter(query = "全彩"))
+            } }
+            assertTrue(error.message.orEmpty().contains("NH search"))
+            assertEquals(listOf("/api/v2/search"), ctx.requests.map { it.url.encodedPath })
+        }
+    }
+
+    @Test
+    fun `valid empty titles use the gallery number like the website`() = runBlocking {
+        val ctx = NhOfflineContext().apply {
+            search = """
+                {"result":[{"id":42,"english_title":"","japanese_title":null,
+                "thumbnail":"https://thumb.test/42.webp","tag_ids":[]}]}
+            """.trimIndent()
+        }
+        val parser = NhentaiParser(ctx)
+        val item = parser.getListPage(1, SortOrder.NEWEST, ContentListFilter(query = "全彩")).single()
+        assertEquals("#42", item.title)
+        assertEquals("https://thumb.test/42.webp", item.coverUrl)
+        assertEquals("", item.description)
+        assertEquals(listOf("/api/v2/search"), ctx.requests.map { it.url.encodedPath })
+    }
+
+    @Test
+    fun `search network and HTTP failures propagate without fallback or retry`() = runBlocking {
+        for (status in listOf(403, 429, 500)) {
+            val ctx = NhOfflineContext().apply { this.status = status }
+            val parser = NhentaiParser(ctx)
+            assertThrows(IOException::class.java) { runBlocking {
+                parser.getListPage(1, SortOrder.NEWEST, ContentListFilter(query = "全彩"))
+            } }
+            assertEquals(listOf("/api/v2/search"), ctx.requests.map { it.url.encodedPath })
+        }
+        val ctx = NhOfflineContext().apply { failure = IOException("offline") }
+        val parser = NhentaiParser(ctx)
+        assertThrows(IOException::class.java) { runBlocking {
+            parser.getListPage(1, SortOrder.NEWEST, ContentListFilter(query = "全彩"))
+        } }
+        assertEquals(listOf("/api/v2/search"), ctx.requests.map { it.url.encodedPath })
+    }
+
+    @Test
+    fun `search and thumbnail configuration retain the operation domain snapshot`() = runBlocking {
+        val ctx = NhOfflineContext()
+        val parser = NhentaiParser(ctx).also { ctx.parser = it }
+        ctx.config.set(parser.configKeyDomain, "old.test")
+        ctx.onRequest = { request ->
+            if (request.url.encodedPath == "/api/v2/search") ctx.config.set(parser.configKeyDomain, "new.test")
+        }
+        val items = parser.getListPage(1, SortOrder.NEWEST, ContentListFilter(query = "全彩"))
+        assertTrue(items.all { it.publicUrl.startsWith("https://old.test/") })
+        assertEquals(listOf("/api/v2/search", "/api/v2/cdn"), ctx.requests.map { it.url.encodedPath })
+        assertTrue(ctx.requests.all { it.url.host == "old.test" && it.header("Referer") == "https://old.test/" })
+    }
+
+    @Test
+    fun `search parsing closes responses and cancellation prevents thumbnail requests`() = runBlocking {
+        supervisorScope {
+            for (cancel in listOf(false, true)) {
+                val ctx = NhOfflineContext()
+                val parser = NhentaiParser(ctx)
+                var closed = false
+                lateinit var pending: Deferred<List<Content>>
+                ctx.bodyTransform = { _, body ->
+                    object : okhttp3.ResponseBody() {
+                        private val buffer = object : okio.ForwardingSource(
+                            okio.Buffer().writeUtf8(if (cancel) body else "invalid JSON"),
+                        ) {
+                            override fun read(sink: okio.Buffer, byteCount: Long): Long {
+                                val result = super.read(sink, byteCount)
+                                if (cancel) pending.cancel()
+                                return result
+                            }
+                            override fun close() { closed = true; super.close() }
+                        }.buffer()
+                        override fun contentType(): okhttp3.MediaType? = null
+                        override fun contentLength(): Long = -1L
+                        override fun source(): okio.BufferedSource = buffer
+                    }
+                }
+                val filter = ContentListFilter(query = "全彩")
+                if (cancel) {
+                    pending = async(start = CoroutineStart.LAZY) { parser.getListPage(1, SortOrder.NEWEST, filter) }
+                    pending.start()
+                    try { pending.await(); fail("Expected cancellation") } catch (_: CancellationException) { }
+                } else {
+                    val error = assertThrows(ParseException::class.java) { runBlocking {
+                        parser.getListPage(1, SortOrder.NEWEST, filter)
+                    } }
+                    assertTrue(error.message.orEmpty().contains("NH search"))
+                }
+                assertTrue(closed)
+                assertEquals(listOf("/api/v2/search"), ctx.requests.map { it.url.encodedPath })
             }
         }
     }
@@ -491,6 +650,15 @@ private class NhOfflineContext : ContentLoaderContext() {
     val requests: MutableList<Request> = Collections.synchronizedList(mutableListOf())
     var gallery = requireNotNull(javaClass.getResource("/fixtures/nhentai/gallery-v2.json")).readText()
     var cdn = requireNotNull(javaClass.getResource("/fixtures/nhentai/cdn.json")).readText()
+    var search = """
+        {"result":[
+            {"id":42,"english_title":"全彩 Fixture","japanese_title":"日本語",
+            "thumbnail":"galleries/42/thumb.webp","tag_ids":[29963]},
+            {"id":43,"english_title":"","japanese_title":"日本語 Fixture",
+            "thumbnail":"https://thumb.test/43.webp","tag_ids":[6346]},
+            {"id":44,"english_title":"English Fixture","thumbnail":"galleries/44/thumb.jpg","tag_ids":[12227]}
+        ],"num_pages":2,"per_page":25,"total":28}
+    """.trimIndent()
     var tagMetadata = """[{"id":1,"type":"tag","url":"/tag/sample-tag/"}]"""
     var tagListPath = "/tag/sample-tag/"
     var status = 200
@@ -508,6 +676,7 @@ private class NhOfflineContext : ContentLoaderContext() {
             onRequest?.invoke(request)
             failure?.let { throw it }
             val body = when (request.url.encodedPath) {
+                "/api/v2/search" -> search
                 "/api/v2/galleries/42" -> gallery
                 "/api/v2/cdn" -> cdn
                 "/api/v2/tags/ids" -> tagMetadata
