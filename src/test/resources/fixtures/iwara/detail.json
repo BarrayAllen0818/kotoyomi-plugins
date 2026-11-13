@@ -1,0 +1,14 @@
+{
+  "id": "vid0001",
+  "slug": "example-animation",
+  "title": "Example animation",
+  "body": "First line\nSecond line <script>alert('example')</script>",
+  "rating": "ecchi",
+  "private": false,
+  "thumbnail": 3,
+  "file": {"id": "file-001", "name": "example.mp4", "mime": "video/mp4"},
+  "user": {"id": "user-001", "name": "Example Uploader", "username": "example"},
+  "tags": [{"id": "animation", "type": "general"}, {"id": "mmd", "type": "general"}],
+  "createdAt": "2026-01-02T03:04:05Z",
+  "fileUrl": "https://filesq.iwara.tv/file/file-001?expires=2000000000&hash=example"
+}

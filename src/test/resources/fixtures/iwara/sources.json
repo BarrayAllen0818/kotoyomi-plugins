@@ -1,0 +1,6 @@
+[
+  {"name": "Source", "type": "video/mp4", "src": {"view": "//media.example.com/source.mp4?token=example"}},
+  {"name": "540", "type": "video/mp4", "src": {"view": "//media.example.com/540.mp4?token=example"}},
+  {"name": "1080", "type": "video/mp4", "src": {"view": "//media.example.com/1080.mp4?token=example"}},
+  {"name": "360", "type": "video/mp4", "src": {"download": "//media.example.com/360.mp4?token=example"}}
+]

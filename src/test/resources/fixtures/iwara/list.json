@@ -1,0 +1,27 @@
+{
+  "page": 0,
+  "limit": 32,
+  "count": 2,
+  "results": [
+    {
+      "id": "vid0001",
+      "slug": "example-animation",
+      "title": "Example animation",
+      "rating": "ecchi",
+      "thumbnail": 3,
+      "file": {"id": "file-001"},
+      "user": {"id": "user-001", "name": "Example Uploader", "username": "example"},
+      "tags": [{"id": "animation", "type": "general"}],
+      "createdAt": "2026-01-02T03:04:05Z"
+    },
+    {
+      "id": "vid0002",
+      "title": "Second animation",
+      "rating": "general",
+      "file": {"id": "file-002"},
+      "customThumbnail": {"id": "cover-002", "name": "custom.jpg"},
+      "user": {"name": "Second Uploader"},
+      "tags": []
+    }
+  ]
+}
