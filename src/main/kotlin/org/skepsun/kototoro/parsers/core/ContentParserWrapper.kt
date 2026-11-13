@@ -39,6 +39,10 @@ internal class ContentParserWrapper(
 		delegate.getList(offset, order, filter)
 	}
 
+	// The host receives this wrapper from the factory, so optional facts must be exposed here too.
+	public fun getDetailsMetadata(content: Content): String? =
+		org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.get(content)
+
 	override suspend fun getDetails(manga: Content): Content = withContext(Dispatchers.Default) {
 		delegate.getDetails(manga)
 	}

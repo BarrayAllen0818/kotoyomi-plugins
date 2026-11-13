@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.skepsun.kototoro.parsers.OfflineContentLoaderContext
+import org.skepsun.kototoro.parsers.newParser
 import org.skepsun.kototoro.parsers.model.ContentListFilter
 import org.skepsun.kototoro.parsers.model.ContentParserSource
 import org.skepsun.kototoro.parsers.model.ContentTag
@@ -22,13 +23,14 @@ class ExHentaiSearchTest {
             <table id="gdd"><tr><td class="gdt1">Length:</td><td class="gdt2">42 pages</td></tr></table>
             </div></body></html>"""
         })
-        val parser = ExHentaiParser(ctx)
+        val parser = ContentParserSource.EXHENTAI.newParser(ctx)
         val content = org.skepsun.kototoro.parsers.model.Content(
             id = 123, title = "作品", altTitles = emptySet(), url = target, publicUrl = target,
             rating = 0f, contentRating = null, coverUrl = null, tags = emptySet(),
             state = null, authors = emptySet(), source = parser.source,
         )
-        val payload = org.json.JSONObject(parser.getDetailsMetadata(parser.getDetails(content))!!)
+        val payload = org.json.JSONObject(parser.javaClass.getMethod("getDetailsMetadata", org.skepsun.kototoro.parsers.model.Content::class.java)
+            .invoke(parser, parser.getDetails(content)) as String)
         assertEquals(42, payload.getInt("total_pages"))
         assertEquals(listOf("original"), payload.getJSONArray("parodies").toList())
         assertEquals(listOf("hero"), payload.getJSONArray("characters").toList())
@@ -41,16 +43,18 @@ class ExHentaiSearchTest {
         val ctx = OfflineContentLoaderContext(mapOf(target to "exhentai/search.html"), transformBody = { _, _ ->
             """<html><body><div class="userwrap"><h2>作品</h2><div class="uwconn"><label>$info</label></div></div></body></html>"""
         })
-        val parser = org.skepsun.kototoro.parsers.site.galleryadults.zh.WnacgParser(ctx)
+        val parser = ContentParserSource.WNACG.newParser(ctx)
         val content = org.skepsun.kototoro.parsers.model.Content(
             id = 42, title = "作品", altTitles = emptySet(), url = target, publicUrl = target,
             rating = 0f, contentRating = null, coverUrl = null, tags = emptySet(),
             state = null, authors = emptySet(), source = parser.source,
         )
-        val payload = org.json.JSONObject(parser.getDetailsMetadata(parser.getDetails(content))!!)
+        val payload = org.json.JSONObject(parser.javaClass.getMethod("getDetailsMetadata", org.skepsun.kototoro.parsers.model.Content::class.java)
+            .invoke(parser, parser.getDetails(content)) as String)
         assertEquals(24, payload.getInt("total_pages"))
         info = "相簿列表 999"
-        val missing = org.json.JSONObject(parser.getDetailsMetadata(parser.getDetails(content))!!)
+        val missing = org.json.JSONObject(parser.javaClass.getMethod("getDetailsMetadata", org.skepsun.kototoro.parsers.model.Content::class.java)
+            .invoke(parser, parser.getDetails(content)) as String)
         assertTrue(missing.isNull("total_pages"))
     }
 

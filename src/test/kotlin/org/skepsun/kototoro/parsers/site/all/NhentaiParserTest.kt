@@ -19,6 +19,7 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 import org.skepsun.kototoro.parsers.ContentLoaderContext
 import org.skepsun.kototoro.parsers.ContentParser
+import org.skepsun.kototoro.parsers.newParser
 import org.skepsun.kototoro.parsers.SourceConfigMock
 import org.skepsun.kototoro.parsers.bitmap.Bitmap
 import org.skepsun.kototoro.parsers.config.ContentSourceConfig
@@ -59,13 +60,14 @@ class NhentaiParserTest {
         val ctx = NhOfflineContext()
         val parser = NhentaiParser(ctx).also { ctx.parser = it }
         val original = parser.parseGalleryList(listDocument("src='/a.jpg'")).single()
-        val details = parser.getDetails(original)
+        val factoryParser = org.skepsun.kototoro.parsers.model.ContentParserSource.NHENTAI.newParser(ctx)
+        val details = factoryParser.getDetails(original)
         assertEquals(original.id, details.id)
         assertEquals(original.url, details.url)
         assertEquals(original.publicUrl, details.publicUrl)
         assertEquals("Fixture title", details.title)
         assertEquals(setOf("Fixture artist"), details.authors)
-        val metadata = org.json.JSONObject(parser.javaClass.getMethod("getDetailsMetadata", Content::class.java).invoke(parser, details) as String)
+        val metadata = org.json.JSONObject(factoryParser.javaClass.getMethod("getDetailsMetadata", Content::class.java).invoke(factoryParser, details) as String)
         assertEquals(2, metadata.getInt("total_pages"))
         assertEquals(listOf("Fixture original"), metadata.getJSONArray("parodies").toList())
         assertEquals(listOf("Fixture character"), metadata.getJSONArray("characters").toList())
@@ -73,11 +75,11 @@ class NhentaiParserTest {
         assertEquals("https://t1.nhentai.net/galleries/42/cover.webp.webp", details.coverUrl)
         val chapter = details.chapters!!.single()
         assertEquals(parser.generateUid("${original.id}-0"), chapter.id)
-        val pages = parser.getPages(chapter)
+        val pages = factoryParser.getPages(chapter)
         assertEquals(listOf("https://i1.nhentai.net/galleries/42/1.jpg",
             "https://i1.nhentai.net/galleries/42/2.webp.webp"), pages.map { it.url })
         assertEquals(parser.generateUid("galleries/42/1.jpg"), pages[0].id)
-        assertEquals(pages[0].url, parser.getPageUrl(pages[0]))
+        assertEquals(pages[0].url, factoryParser.getPageUrl(pages[0]))
         assertEquals(1, ctx.requests.count { it.url.encodedPath == "/api/v2/cdn" })
         assertTrue(ctx.requests.all { it.header("Referer") == "https://nhentai.net/" })
         assertEquals("https://nhentai.net/", pages[0].headers?.get("Referer"))

@@ -32,6 +32,7 @@ import org.skepsun.kototoro.parsers.exception.ParseException
 import org.skepsun.kototoro.parsers.util.generateUid
 import org.skepsun.kototoro.parsers.ContentLoaderContext
 import org.skepsun.kototoro.parsers.ContentParser
+import org.skepsun.kototoro.parsers.newParser
 import org.skepsun.kototoro.parsers.SourceConfigMock
 import org.skepsun.kototoro.parsers.bitmap.Bitmap
 import org.skepsun.kototoro.parsers.config.ContentSourceConfig
@@ -43,6 +44,32 @@ import org.skepsun.kototoro.parsers.model.SortOrder
 import org.skepsun.kototoro.parsers.util.LinkResolver
 
 class JmComicTest {
+
+    @Test
+    fun `factory entry exposes website metadata without extra requests`() = runTest {
+        val context = JmOfflineContext()
+        context.albumBody = JSONObject(context.albumBody).apply {
+            put("total_photos", "42")
+            put("works", org.json.JSONArray(listOf("原作一", "原作二")))
+            put("actors", org.json.JSONArray(listOf("角色甲")))
+        }.toString()
+        val parser = org.skepsun.kototoro.parsers.model.ContentParserSource.JMCOMIC.newParser(context)
+        val card = parser.getList(0, SortOrder.NEWEST, ContentListFilter(query = "123456")).single()
+        val details = parser.getDetails(card)
+        val requestCount = context.requests.size
+        val hook = parser.javaClass.getMethod("getDetailsMetadata", org.skepsun.kototoro.parsers.model.Content::class.java)
+        val payload = JSONObject(hook.invoke(parser, details) as String)
+        assertEquals(42, payload.getInt("total_pages"))
+        assertEquals(listOf("原作一", "原作二"), payload.getJSONArray("parodies").toList())
+        assertEquals(listOf("角色甲"), payload.getJSONArray("characters").toList())
+        assertEquals(card.id, details.id)
+        assertEquals(card.url, details.url)
+        assertNull(hook.invoke(parser, card))
+        val unsupported = org.skepsun.kototoro.parsers.model.ContentParserSource.RULE34VIDEO.newParser(context)
+        assertNull(hook.invoke(unsupported, card))
+        assertEquals(requestCount, context.requests.size)
+    }
+
     @Test
     fun `details metadata uses album total photos and structured works and actors`() = runTest {
         val context = JmOfflineContext()
