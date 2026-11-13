@@ -40,6 +40,24 @@ class NhentaiParserIntegrationTest {
         checkImage(context, list.first().coverUrl!!, null)
     }
 
+    @Test
+    fun `anonymous keyword search loads v2 pages sorts and thumbnails`() = runBlocking {
+        val context = NhIntegrationContext()
+        val parser = NhentaiParser(context).also { context.parser = it }
+        val filter = ContentListFilter(query = "全彩")
+        val first = parser.getListPage(1, SortOrder.NEWEST, filter)
+        val second = parser.getListPage(2, SortOrder.NEWEST, filter)
+        val popular = parser.getListPage(1, SortOrder.POPULARITY_MONTH, filter)
+        assertTrue(first.isNotEmpty(), "NH keyword search first page is empty")
+        assertTrue(second.isNotEmpty(), "NH keyword search second page is empty")
+        assertTrue(popular.isNotEmpty(), "NH keyword search popular month is empty")
+        assertTrue(first.map { it.url } != second.map { it.url }, "NH keyword search repeated the first page")
+        for (item in listOf(first.first(), first.last())) {
+            assertTrue(item.title.isNotBlank() && item.url.toLongOrNull() != null)
+            checkImage(context, requireNotNull(item.coverUrl), mapOf("Referer" to "https://nhentai.net/"))
+        }
+    }
+
     @ParameterizedTest
     @ValueSource(strings = ["385440", "686046"])
     fun `anonymous v2 cover first last images are accessible`(id: String) = runBlocking {

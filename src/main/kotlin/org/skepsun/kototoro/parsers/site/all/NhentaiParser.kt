@@ -821,21 +821,21 @@ internal class NhentaiParser(context: ContentLoaderContext) :
 
     override suspend fun getListPage(page: Int, order: SortOrder, filter: ContentListFilter): List<Content> {
         val operation = requestContext()
-		val query = filter.query.orEmpty()
-		val langTag = filter.tags.firstOrNull { it.key.startsWith("language:") }
-		val tagFilter = filter.tags.firstOrNull { it.key.startsWith("tag:") }
-
-		val sortParam = when (order) {
-			SortOrder.POPULARITY_TODAY -> "popular-today"
-			SortOrder.POPULARITY_WEEK -> "popular-week"
-			SortOrder.POPULARITY_MONTH -> "popular-month"
-			SortOrder.POPULARITY -> "popular"
-			else -> null
-		}
-		val searchSortParam = if (sortParam != null) "&sort=$sortParam" else ""
-
-		val url = when {
-			query.isNotEmpty() -> "https://${operation.domain}/search/?q=${query.urlEncoded()}&page=$page$searchSortParam"
+        val query = filter.query.orEmpty()
+        val langTag = filter.tags.firstOrNull { it.key.startsWith("language:") }
+        val tagFilter = filter.tags.firstOrNull { it.key.startsWith("tag:") }
+        val sortParam = when (order) {
+            SortOrder.POPULARITY_TODAY -> "popular-today"
+            SortOrder.POPULARITY_WEEK -> "popular-week"
+            SortOrder.POPULARITY_MONTH -> "popular-month"
+            SortOrder.POPULARITY -> "popular"
+            else -> null
+        }
+        if (query.isNotEmpty()) {
+            return search(query, page, sortParam ?: "date", operation)
+        }
+        val searchSortParam = if (sortParam != null) "&sort=$sortParam" else ""
+        val url = when {
             langTag != null -> {
                 val language = langTag.key.substringAfter("language:")
                 "https://${operation.domain}/language/$language/?page=$page$searchSortParam"
@@ -844,11 +844,76 @@ internal class NhentaiParser(context: ContentLoaderContext) :
                 .addQueryParameter("page", page.toString())
                 .apply { if (sortParam != null) addQueryParameter("sort", sortParam) }
                 .build().toString()
-			sortParam != null -> "https://${operation.domain}/search/?q=%22%22&page=$page$searchSortParam"
-			else -> "https://${operation.domain}/?page=$page"
-		}
+            sortParam != null -> "https://${operation.domain}/search/?q=%22%22&page=$page$searchSortParam"
+            else -> "https://${operation.domain}/?page=$page"
+        }
         val doc = webClient.httpGet(url, operation.headers).parseHtml()
         return parseGalleryList(doc, operation.domain)
+    }
+
+    private suspend fun search(query: String, page: Int, sort: String, operation: RequestContext): List<Content> {
+        val url = "https://${operation.domain}/api/v2/search?query=${query.urlEncoded()}&sort=$sort&page=$page"
+        fun invalidSearch(field: String, cause: Throwable? = null): Nothing =
+            throw ParseException("NH search: invalid $field", url, cause)
+
+        // The search webpage converts API failures to empty results; consume the API response directly.
+        val json = webClient.httpGet(url, operation.headers).use { response ->
+            currentCoroutineContext().ensureActive()
+            try {
+                response.parseJson()
+            } catch (e: JSONException) {
+                invalidSearch("response JSON", e)
+            }
+        }
+        currentCoroutineContext().ensureActive()
+        if (json.has("error") && !json.isNull("error")) invalidSearch("response error")
+        val result = json.optJSONArray("result") ?: invalidSearch("result")
+        var thumbnailServer: HttpUrl? = null
+        return (0 until result.length()).map { index ->
+            currentCoroutineContext().ensureActive()
+            val entry = result.optJSONObject(index) ?: invalidSearch("result[$index]")
+            val id = entry.opt("id")?.toString()
+                ?.takeIf { it.matches(Regex("[1-9][0-9]*")) && it.toLongOrNull() != null }
+                ?: invalidSearch("result[$index].id")
+            val englishTitle = entry.opt("english_title") as? String
+                ?: invalidSearch("result[$index].english_title")
+            val title = englishTitle.trim().takeIf { it.isNotEmpty() }
+                ?: (entry.opt("japanese_title") as? String)?.trim()?.takeIf { it.isNotEmpty() }
+                ?: "#$id"
+            val thumbnail = (entry.opt("thumbnail") as? String)?.takeIf { it.isNotBlank() }
+                ?: invalidSearch("result[$index].thumbnail")
+            val cover = thumbnail.toHttpUrlOrNull() ?: run {
+                val server = thumbnailServer ?: cdn(operation).thumbnails.also { thumbnailServer = it }
+                server.resolve(thumbnail) ?: invalidSearch("result[$index].thumbnail")
+            }
+            if (!cover.isHttps) invalidSearch("result[$index].thumbnail")
+            val tagIds = entry.optJSONArray("tag_ids")
+            val language = (0 until (tagIds?.length() ?: 0)).asSequence()
+                .mapNotNull { tagIds?.opt(it)?.toString() }
+                .firstOrNull { it == "12227" || it == "6346" || it == "29963" }
+                ?.let {
+                    when (it) {
+                        "12227" -> "English"
+                        "6346" -> "日本語"
+                        else -> "中文"
+                    }
+                }.orEmpty()
+            Content(
+                id = generateUid(id),
+                title = title,
+                altTitles = emptySet(),
+                url = id,
+                publicUrl = "https://${operation.domain}/g/$id",
+                rating = org.skepsun.kototoro.parsers.model.RATING_UNKNOWN,
+                contentRating = ContentRating.ADULT,
+                coverUrl = cover.toString(),
+                tags = emptySet(),
+                state = null,
+                authors = emptySet(),
+                source = source,
+                description = language,
+            )
+        }
     }
 
     private suspend fun tagUrl(tag: ContentTag, operation: RequestContext): HttpUrl {
