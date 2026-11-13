@@ -244,6 +244,9 @@ internal class ExHentaiParser(
         )
     }
 
+    public fun getDetailsMetadata(content: Content): String? =
+        org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.get(content)
+
     override suspend fun getDetails(manga: Content): Content {
         val doc = webClient.httpGet(manga.url.toAbsoluteUrl(domain)).parseHtml()
         val root = doc.body().selectFirstOrThrow("div.gm")
@@ -314,7 +317,15 @@ internal class ExHentaiParser(
                 }
                 chapters.toList()
             },
-        )
+        ).let { details ->
+            org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.attach(
+                details,
+                length?.let { Regex("^(\\d+)\\s+pages?$", RegexOption.IGNORE_CASE).find(it) }
+                    ?.groupValues?.get(1)?.toIntOrNull(),
+                tags.filter { it.key.startsWith("parody:") }.map { it.key.substringAfter(':') },
+                tags.filter { it.key.startsWith("character:") }.map { it.key.substringAfter(':') },
+            )
+        }
     }
 
     private fun buildDetailsDescription(

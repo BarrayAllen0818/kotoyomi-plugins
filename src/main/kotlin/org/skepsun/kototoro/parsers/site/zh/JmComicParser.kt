@@ -574,6 +574,9 @@ internal class JmParser(
         )
     }
 
+    public fun getDetailsMetadata(content: Content): String? =
+        org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.get(content)
+
     override suspend fun getDetails(manga: Content): Content {
         ensureDomains()
         val id = manga.url.substringAfter("id=").substringBefore("&").ifBlank {
@@ -641,7 +644,17 @@ internal class JmParser(
             largeCoverUrl = cover,
             tags = tags,
             chapters = chapters,
-        )
+        ).let { details ->
+            fun names(key: String): List<String> {
+                val array = json.optJSONArray(key) ?: return emptyList()
+                return (0 until array.length()).mapNotNull { index ->
+                    (array.opt(index) as? String)?.trim()?.takeIf(String::isNotEmpty)
+                }
+            }
+            org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.attach(
+                details, json.opt("total_photos")?.toString()?.toIntOrNull(), names("works"), names("actors"),
+            )
+        }
     }
 
     override suspend fun getPages(chapter: ContentChapter): List<ContentPage> {

@@ -43,6 +43,25 @@ import org.skepsun.kototoro.parsers.model.SortOrder
 import org.skepsun.kototoro.parsers.util.LinkResolver
 
 class JmComicTest {
+    @Test
+    fun `details metadata uses album total photos and structured works and actors`() = runTest {
+        val context = JmOfflineContext()
+        context.albumBody = org.json.JSONObject(context.albumBody).apply {
+            put("total", 999)
+            put("total_photos", "42")
+            put("works", org.json.JSONArray(listOf("原作一", "原作二")))
+            put("actors", org.json.JSONArray(listOf("角色甲")))
+        }.toString()
+        val parser = JmParser(context)
+        val card = parser.getList(0, SortOrder.NEWEST, ContentListFilter(query = "123456")).single()
+        val details = parser.getDetails(card)
+        val payload = org.json.JSONObject(parser.getDetailsMetadata(details)!!)
+        assertEquals(42, payload.getInt("total_pages"))
+        assertEquals(listOf("原作一", "原作二"), payload.getJSONArray("parodies").toList())
+        assertEquals(listOf("角色甲"), payload.getJSONArray("characters").toList())
+        assertNull(parser.getDetailsMetadata(card))
+    }
+
 
     private val parser = JmParser(JmOfflineContext())
 

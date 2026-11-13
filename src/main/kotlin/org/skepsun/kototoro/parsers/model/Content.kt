@@ -4,6 +4,27 @@ import androidx.collection.ArrayMap
 import org.skepsun.kototoro.parsers.util.findById
 import org.skepsun.kototoro.parsers.util.nullIfEmpty
 
+
+/** Optional website facts do not change Content's constructor or copy ABI. */
+public object WebsiteWorkMetadata {
+    private val records = java.util.Collections.synchronizedMap(java.util.WeakHashMap<Content, String>())
+
+    public fun attach(content: Content, totalPages: Int? = null,
+        parodies: Collection<String> = emptyList(), characters: Collection<String> = emptyList(),
+    ): Content {
+        fun names(values: Collection<String>) = org.json.JSONArray(
+            values.map(String::trim).filter(String::isNotEmpty).distinct(),
+        )
+        records[content] = org.json.JSONObject().apply {
+            put("total_pages", totalPages?.takeIf { it > 0 } ?: org.json.JSONObject.NULL)
+            put("parodies", names(parodies))
+            put("characters", names(characters))
+        }.toString()
+        return content
+    }
+    public fun get(content: Content): String? = records[content]
+}
+
 public data class Content(
 	/**
 	 * Unique identifier for manga

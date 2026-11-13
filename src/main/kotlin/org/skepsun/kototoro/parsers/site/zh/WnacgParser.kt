@@ -455,6 +455,9 @@ internal class WnacgParser(context: ContentLoaderContext) :
         }
     }
 
+    public fun getDetailsMetadata(content: Content): String? =
+        org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.get(content)
+
     override suspend fun getDetails(manga: Content): Content {
         val doc = httpGetHtmlWithBackoff(manga.publicUrl)
         val id = extractIdFromUrl(manga.url) ?: extractIdFromUrl(doc.location())
@@ -506,7 +509,13 @@ internal class WnacgParser(context: ContentLoaderContext) :
             tags = tags,
             chapters = chapters,
             description = description,
-        )
+        ).let { details ->
+            val total = if (seriesChapters.isEmpty()) {
+                Regex("(?:頁數|页数)\\s*[:：]\\s*(\\d+)")
+                    .find(doc.select("div.userwrap .uwconn").text())?.groupValues?.get(1)?.toIntOrNull()
+            } else null
+            org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.attach(details, total)
+        }
     }
 
     /**

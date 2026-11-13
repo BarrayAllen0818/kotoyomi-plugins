@@ -12,6 +12,48 @@ import org.skepsun.kototoro.parsers.model.ContentTag
 import org.skepsun.kototoro.parsers.model.SortOrder
 
 class ExHentaiSearchTest {
+
+    @Test
+    fun `gallery details expose total pages and namespaced original works and characters`() = runBlocking {
+        val target = "https://e-hentai.org/g/123/fixture/"
+        val ctx = OfflineContentLoaderContext(mapOf(target to "exhentai/search.html"), transformBody = { _, _ ->
+            """<html><body><div class="gm"><div id="gd2"><h1 id="gn">作品</h1></div>
+            <div id="taglist"><div class="gt" id="ta_parody:original"><a>original</a></div><div class="gt" id="ta_character:hero"><a>hero</a></div></div>
+            <table id="gdd"><tr><td class="gdt1">Length:</td><td class="gdt2">42 pages</td></tr></table>
+            </div></body></html>"""
+        })
+        val parser = ExHentaiParser(ctx)
+        val content = org.skepsun.kototoro.parsers.model.Content(
+            id = 123, title = "作品", altTitles = emptySet(), url = target, publicUrl = target,
+            rating = 0f, contentRating = null, coverUrl = null, tags = emptySet(),
+            state = null, authors = emptySet(), source = parser.source,
+        )
+        val payload = org.json.JSONObject(parser.getDetailsMetadata(parser.getDetails(content))!!)
+        assertEquals(42, payload.getInt("total_pages"))
+        assertEquals(listOf("original"), payload.getJSONArray("parodies").toList())
+        assertEquals(listOf("hero"), payload.getJSONArray("characters").toList())
+    }
+
+    @Test
+    fun `WNACG album total requires the explicit page count label`() = runBlocking {
+        val target = "https://www.wnacg.com/photos-index-aid-42.html"
+        var info = "頁數：24"
+        val ctx = OfflineContentLoaderContext(mapOf(target to "exhentai/search.html"), transformBody = { _, _ ->
+            """<html><body><div class="userwrap"><h2>作品</h2><div class="uwconn"><label>$info</label></div></div></body></html>"""
+        })
+        val parser = org.skepsun.kototoro.parsers.site.galleryadults.zh.WnacgParser(ctx)
+        val content = org.skepsun.kototoro.parsers.model.Content(
+            id = 42, title = "作品", altTitles = emptySet(), url = target, publicUrl = target,
+            rating = 0f, contentRating = null, coverUrl = null, tags = emptySet(),
+            state = null, authors = emptySet(), source = parser.source,
+        )
+        val payload = org.json.JSONObject(parser.getDetailsMetadata(parser.getDetails(content))!!)
+        assertEquals(24, payload.getInt("total_pages"))
+        info = "相簿列表 999"
+        val missing = org.json.JSONObject(parser.getDetailsMetadata(parser.getDetails(content))!!)
+        assertTrue(missing.isNull("total_pages"))
+    }
+
     private fun url(query: String?, retry: Boolean = false): String = "https://e-hentai.org/".toHttpUrl().newBuilder()
         .addEncodedQueryParameter("next", "0")
         .addQueryParameter("f_search", query)

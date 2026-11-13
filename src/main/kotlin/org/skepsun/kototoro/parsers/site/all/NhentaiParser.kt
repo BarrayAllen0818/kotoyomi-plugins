@@ -1070,6 +1070,9 @@ internal class NhentaiParser(context: ContentLoaderContext) :
     private fun requiredPath(json: JSONObject?, operation: RequestContext, id: String, field: String): String =
         (json?.opt("path") as? String)?.takeIf { it.isNotBlank() } ?: invalid(operation, id, field)
 
+    public fun getDetailsMetadata(content: Content): String? =
+        org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.get(content)
+
     override suspend fun getDetails(manga: Content): Content {
         val operation = requestContext()
         val galleryId = normalizeId(manga.url)
@@ -1087,6 +1090,8 @@ internal class NhentaiParser(context: ContentLoaderContext) :
 		var translated = false
 		val languageCandidates = mutableListOf<String>()
 		val authors = mutableSetOf<String>()
+        val parodies = mutableSetOf<String>()
+        val characters = mutableSetOf<String>()
         val tags = json.optJSONArray("tags")?.let { arr ->
             buildSet {
                 for (i in 0 until arr.length()) {
@@ -1104,6 +1109,8 @@ internal class NhentaiParser(context: ContentLoaderContext) :
 						}
 						if (name.equals("translated", ignoreCase = true)) translated = true
 						if (type == "artist") authors.add(name)
+                        if (type == "parody") parodies.add(name)
+                        if (type == "character") characters.add(name)
 						add(ContentTag(name, name, source))
 						// Backup: derive language by id if not set
 						if (type == "language") {
@@ -1156,7 +1163,11 @@ internal class NhentaiParser(context: ContentLoaderContext) :
             description = langTag?.let { if (translated) "$it / translated" else it } ?: manga.description,
             coverUrl = coverUrl,
             authors = if (authors.isNotEmpty()) authors else manga.authors,
-        )
+        ).let {
+            org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.attach(
+                it, json.opt("num_pages")?.toString()?.toIntOrNull(), parodies, characters,
+            )
+        }
     }
 
     override suspend fun getPages(chapter: ContentChapter): List<ContentPage> {
