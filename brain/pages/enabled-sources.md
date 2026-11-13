@@ -5,14 +5,14 @@ category: project
 status: active
 tags: [sources, user-preferences]
 created: "2026-11-09T21:09:48"
-updated: "2026-11-14T05:33:35"
+updated: "2026-11-14T06:38:54"
 ---
 
 
 <!-- compiled_truth -->
 ## 已启用清单
 
-用户已确认启用以下七个来源：2026-11-09 确认 JM、NH、WN、HI、HA，2026-11-14 补充 EH 和 Rule34。
+用户当前确认启用以下七个来源；HA 于 2026-11-14 更正为 Hanime1（hanime1.me）。
 
 | 用户简称 | 来源名称 | 已明确的域名 |
 |---|---|---|
@@ -20,11 +20,13 @@ updated: "2026-11-14T05:33:35"
 | NH | nhentai | 未指定 |
 | WN | WNACG | 未指定 |
 | HI | Hitomi.La | hitomi.la |
-| HA | Hanime | hanime.tv |
+| HA | Hanime1 | hanime1.me |
 | EH | ExHentai | e-hentai.org、exhentai.org |
 | Rule34 | Rule34Video | rule34video.com |
 
-HA 指 Hanime，不是 Hanime1（hanime1.me）；Rule34 指 Rule34Video（rule34video.com）。EH 使用支持 e-hentai.org 和 exhentai.org 的 ExHentai 插件。本表记录用户明确启用的七个来源，不推断其他来源的启用状态。
+HA 指 Hanime1；Rule34 指 Rule34Video（rule34video.com）。EH 使用支持 e-hentai.org 和 exhentai.org 的 ExHentai 插件。本表只记录用户明确启用的七个来源。
+
+漫画与视频的作品信息字段表、排除日期和网站运营资料的范围，以及各网站实际提供情况，统一见 [EDD/PRD.md 的作品搜索信息范围](../../EDD/PRD.md#作品搜索信息范围)。Hanime.tv 的网站核查不适用于 Hanime1。
 
 ## 关联规则
 
@@ -49,4 +51,10 @@ HA 指 Hanime，不是 Hanime1（hanime1.me）；Rule34 指 Rule34Video（rule34
   kind: decision
   summary: "补充已启用的 EH 与 Rule34Video，清单更新为七个来源"
   source: "2026-11-14 用户要求记下 EH、Rule34 并确认写入预览"
+  affects: [enabled-sources]
+
+- time: 2026-11-14T06:38:54
+  kind: decision
+  summary: "按用户更正将 HA 改为 Hanime1，并关联已确认的漫画与视频字段表"
+  source: "2026-11-14 用户明确更正 Hanime 为 Hanime1，要求去掉日期并记录其余字段表"
   affects: [enabled-sources]
