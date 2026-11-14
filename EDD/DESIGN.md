@@ -1,6 +1,6 @@
 # 作品资料、搜索与详情展示方案
 
-状态：插件 1.0.146 已发布；宿主配套实现及 Debug 构建完成，手机拒绝本次安装，设备验收尚未进行。
+状态：插件 1.0.146 已发布；Iwara 用户使用验收已通过。宿主配套实现及 Debug 构建完成，手机拒绝本次安装，宿主新增资料与详情展示的整体验收尚未完成。
 
 ## 依据与范围
 
@@ -41,6 +41,7 @@ Android 详情保留现有面板、配色及其他区域，将常驻资料组织
 - 插件源码 `35b54ab3`：适用于当前输入的离线证据共 144 项，分轮取得；正式工厂覆盖资料提取与无额外请求。JVM JAR 与 D8 9.3.16 打包通过，D8 日志为空。插件仅包含 `classes.dex`，SHA-256 为 `fd5dda40f9814bb1f59bcfe666f3cf83e377daab69f715096860f894d8f56721`。
 - 1.0.146 发布提交 `b59d2fd4173b7eca1fd4c9ad416feceb0ab4e631`，既有仓库 URL 的索引与实际下载哈希核对通过；证据见忽略目录中的 `build/metadata-publish.log`。
 - Rule34Video 线上检查通过。Iwara 取得列表后，因所选列表项缺少封面地址而停止，未完成该轮详情及媒体检查；没有放宽断言或记为通过。Hanime1 页面返回 403，字段位置参考公开扩展实现，独立系列名称没有可靠字段而保持为空。
+- 2026-11-15，用户确认 Iwara 使用验收通过。记录用户整体验收结论，不补造逐项操作、所用版本或自动检查通过记录。
 - 宿主源码本地提交 `602b0645a`，135 项当前适用定向检查分轮通过；最后新增的真实历史保存回归先复现旧资料回写，再验证修正后 9 项通过。普通偏好及进度保存不更新已有资料，明确列表回调和详情更新负责补充资料。核心、备份、解析入口及应用证据分别见宿主 `app/build/meta-host-*.log`。
 - 宿主 `:app:assembleDebug` 与最终定向检查同轮通过，APK 位于 `../kotoyomi/app/build/outputs/apk/debug/app-arm64-v8a-debug.apk`，包名 `org.skepsun.kotoyomi.debug`、版本 2.4.1（1258）、arm64-v8a，签名核对通过，SHA-256 为 `29c179267b72c8d1c65e580c8c756508e2db2ece9aa5ae9d959d57fa398136b2`。
-- 目标手机 V2458A（`10AF7U234D00540`）本次保留数据覆盖安装返回 `INSTALL_FAILED_ABORTED: User rejected permissions`；安装失败后停止，未自动重试。详见宿主 `app/build/metadata-install.log`。新详情实际画面、逐名称操作及标准备份完整恢复仍待设备验收，Iwara 线上封面缺口保持未验证。
+- 目标手机 V2458A（`10AF7U234D00540`）本次保留数据覆盖安装返回 `INSTALL_FAILED_ABORTED: User rejected permissions`；安装失败后停止，未自动重试。详见宿主 `app/build/metadata-install.log`。新详情实际画面、逐名称操作及标准备份完整恢复仍待设备验收；Iwara 用户使用验收已通过，此前自动检查中断保留为历史记录。
