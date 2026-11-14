@@ -4,14 +4,14 @@
 
 ### BUG-002 简介中双语标注的品牌漏取
 
-- 状态：待验收。2026-11-15 已完成品牌识别修复，离线及线上检查、JVM 构建与 DEX 打包通过；插件 1.0.147 已通过现有仓库发布，用户实际显示与使用验收待完成。
+- 状态：已通过。2026-11-15 用户在插件 1.0.147 的品牌查看指引后回复“通过”，确认本次品牌提取修复使用验收通过。离线及线上检查、JVM 构建与 DEX 打包证据继续适用。
 - 预期依据：[作品搜索信息范围](PRD.md#作品搜索信息范围)要求提取网站明确提供的制作方／品牌。
 - 实际偏差：作品 409178 简介明确标注 `Brand / ブランド: LAXIUS`，作品 409177 标注 `Brand / ブランド: Skello-on-sale`；正式插件入口取得的补充资料均缺少 `producers`。
 - 根因与处理：现有匹配只识别行首的 `Brand:`，不接受双语标签。仅扩展明确品牌标签的识别，保留原英文标签、现有作者和其他资料提取行为，不从普通简介文字猜测品牌。
 - 修复与验证：在正式插件工厂中新增八个品牌用例，旧实现的三个双语品牌用例因缺少 `producers` 失败；修复后所在测试类 22 项全部通过。涵盖双语标签、英文标签、半角／全角冒号、换行与 HTML 换行、无明确品牌及空值，不增加详情请求。
 - 线上检查：新增 `Hanime1IntegrationTest`，使用默认 HTTP 协议协商，通过 `HANIME1_INTEGRATION_TEST=1` 显式启用。四部真实作品均通过 HTTP/2 返回 200，正式工厂验证作者、类型、时长、中文字幕标记、关联作品及品牌；409178、409177 分别取得 `LAXIUS`、`Skello-on-sale`。测试使用电脑现有代理，不加载账号或 Cookie 文件；没有修改宿主或其他来源的测试网络设置。日志见 `build/hanime1-brand-red.log`、`build/hanime1-brand-green.log`。
 - 最终构建：`gradlew.bat test --tests org.skepsun.kototoro.parsers.site.all.ExHentaiSearchTest --tests org.skepsun.kototoro.parsers.site.zh.Hanime1IntegrationTest jar pluginDexClasspath --init-script .github/scripts/plugin-classpath.gradle --no-daemon --console=plain` 成功；显式开启上述线上测试并沿用电脑现有代理，22 项离线、1 项线上检查全部通过，无失败、错误或跳过。D8 9.3.16 使用 Android 34 API、最低 Android 21 打包成功，日志为空，产物仅含 `classes.dex`；SHA-256 为 `ed4436e347272f14530b07514b0807fad84b73a27b58b58c0fa6e8c23f43df80`。日志见 `build/hanime1-brand-final.log`、`build/hanime1-brand-d8.log`。
-- 发布与验收入口：源码 `15e35b6d` 已推送至 `origin/codex/hanime1-brand`；1.0.147 发布提交为 `35f8928ebe85de01705f3104994c4d27593006c5`，原仓库 URL 的索引与插件下载哈希核对通过，`http_verified=true`。发布及验证证据见 `build/hanime1-brand-publish.log`、`build/hanime1-brand-verification.json`。在 Kotoyomi 更新现有插件仓库至 1.0.147 后，重新取得 Hanime1 409178、409177 的详情；预期制作方／品牌分别为 `LAXIUS`、`Skello-on-sale`。本次没有重建或安装宿主 APK，远端 master 保持原状。
+- 发布与验收入口：源码 `15e35b6d` 已推送至 `origin/codex/hanime1-brand`；1.0.147 发布提交为 `35f8928ebe85de01705f3104994c4d27593006c5`，原仓库 URL 的索引与插件下载哈希核对通过，`http_verified=true`。发布及验证证据见 `build/hanime1-brand-publish.log`、`build/hanime1-brand-verification.json`。验收指引为在 Kotoyomi 更新现有插件仓库至 1.0.147 后，在 Hanime1 来源分别搜索 `Malfoid`、`Double Trouble`，打开对应作品并刷新详情，核对品牌 `LAXIUS`、`Skello-on-sale`；用户随后确认通过，未补造逐项操作记录。本次没有重建或安装宿主 APK，验收后同步源码主线时继续使用同一插件产物，不重复发布。
 
 ## 作品补充元数据
 
