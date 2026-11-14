@@ -655,7 +655,8 @@ internal class Hanime1(
             it.text().removePrefix("# ").replace(Regex("""\s*\(\d+\)\s*$"""), "").trim()
         }
         val brand = metaDesc?.replace(Regex("""(?i)<br\s*/?>"""), "\n")?.let { description ->
-            Regex("""(?im)^\s*Brand\s*[:：]\s*([^\r\n<]+)""").find(description)?.groupValues?.get(1)?.trim()
+            Regex("""(?im)^\s*Brand(?:\s*/\s*ブランド)?\s*[:：][ \t]*([^\r\n<]+)""")
+                .find(description)?.groupValues?.get(1)?.trim()
                 ?.takeIf(String::isNotEmpty)
         }
         return manga.copy(

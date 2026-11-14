@@ -5,6 +5,8 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.CsvSource
 import org.skepsun.kototoro.parsers.OfflineContentLoaderContext
 import org.skepsun.kototoro.parsers.newParser
 import org.skepsun.kototoro.parsers.model.ContentListFilter
@@ -130,6 +132,39 @@ class ExHentaiSearchTest {
         assertTrue(!shortAnimeMetadata.has("groups"))
         assertTrue(!shortAnimeMetadata.has("series"))
         assertEquals(3, ctx.requests.size)
+    }
+
+    @ParameterizedTest
+    @CsvSource(
+        value = [
+            "Brand: Explicit Brand|Explicit Brand",
+            "Brand / ブランド: LAXIUS|LAXIUS",
+            "Title / タイトル: Example&#10;Brand / ブランド: Skello-on-sale&#10;Release: 2026/11/11|Skello-on-sale",
+            "Title: Example<br>Brand / ブランド： Studio Name <br/>Release: 2026/11/11|Studio Name",
+            "Brand: Legacy Brand<br>Release: 2026/11/11|Legacy Brand",
+            "Description mentions Brand: Mention Only|",
+            "Brandish: Not A Brand Label|",
+            "Brand / ブランド:   |",
+        ],
+        delimiter = '|',
+    )
+    fun `Hanime1 factory only extracts explicitly labelled brands`(description: String, expected: String?) = runBlocking {
+        val url = "https://hanime1.me/watch?v=42"
+        val ctx = OfflineContentLoaderContext(mapOf(url to "exhentai/search.html"), transformBody = { _, _ ->
+            """<html><head><meta name="description" content="$description"></head>
+            <body><div id="shareBtn-title">Actual title</div>
+            <a id="video-artist-name">Creator</a><a>2D動畫</a></body></html>"""
+        })
+        val parser = ContentParserSource.HANIME1.newParser(ctx)
+        val details = parser.getDetails(metadataContent(ContentParserSource.HANIME1, url))
+        val payload = metadata(parser, details)
+        if (expected == null) {
+            assertTrue(!payload.has("producers"))
+        } else {
+            assertEquals(listOf(expected), payload.getJSONArray("producers").toList())
+        }
+        assertEquals(setOf("Creator"), details.authors)
+        assertEquals(listOf(url), ctx.requests)
     }
 
     @Test
