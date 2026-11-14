@@ -44,7 +44,7 @@ internal class ContentParserWrapper(
 		org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.get(content)
 
 	override suspend fun getDetails(manga: Content): Content = withContext(Dispatchers.Default) {
-		delegate.getDetails(manga)
+		WebsiteWorkMetadata.inherit(manga, delegate.getDetails(manga))
 	}
 
 	override suspend fun getPages(chapter: ContentChapter): List<ContentPage> = withContext(Dispatchers.Default) {

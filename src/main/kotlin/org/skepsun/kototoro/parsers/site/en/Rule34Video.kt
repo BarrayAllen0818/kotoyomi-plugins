@@ -201,7 +201,40 @@ internal class Rule34Video(context: ContentLoaderContext) :
                 scanlator = null,
                 source = source,
             )),
-        )
+        ).let { details ->
+            val characterGroups = doc.select(".col, .vp-group").filter { group ->
+                group.selectFirst(".label")?.text()?.trim()?.removeSuffix(":")?.equals("Characters", true) == true
+            }
+            val duration = doc.select("script[type=application/ld+json]").asSequence().mapNotNull { script ->
+                val json = script.data().trim().let { raw ->
+                    try { org.json.JSONTokener(raw).nextValue() } catch (_: org.json.JSONException) { null }
+                }
+                fun find(node: Any?): String? = when (node) {
+                    is org.json.JSONObject -> {
+                        val type = node.opt("@type")
+                        if (type == "VideoObject" || (type is org.json.JSONArray && type.toList().contains("VideoObject"))) {
+                            (node.opt("duration") as? String)
+                        } else find(node.opt("@graph")) ?: find(node.opt("mainEntity"))
+                    }
+                    is org.json.JSONArray -> (0 until node.length()).firstNotNullOfOrNull { find(node.opt(it)) }
+                    else -> null
+                }
+                find(json)?.let { value ->
+                    Regex("""^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$""", RegexOption.IGNORE_CASE)
+                        .matchEntire(value)?.groupValues?.let { parts ->
+                            (parts[1].toLongOrNull() ?: 0L) * 3600 +
+                                (parts[2].toLongOrNull() ?: 0L) * 60 + (parts[3].toLongOrNull() ?: 0L)
+                        }
+                }
+            }.firstOrNull()
+            org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.attachFields(
+                details,
+                characters = characterGroups.flatMap { group ->
+                    group.select("a[href]").map { it.text().trim() }.filter(String::isNotEmpty)
+                }.takeIf { characterGroups.isNotEmpty() },
+                durationSeconds = duration ?: Long.MIN_VALUE,
+            )
+        }
     }
 
     override suspend fun resolveLink(resolver: LinkResolver, link: HttpUrl): Content? {

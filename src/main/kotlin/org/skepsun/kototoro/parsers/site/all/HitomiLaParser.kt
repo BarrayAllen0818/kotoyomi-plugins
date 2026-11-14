@@ -596,7 +596,7 @@ internal class HitomiLaParser(context: ContentLoaderContext) : AbstractContentPa
 		val author =
 			json.optJSONArray("artists")
 				?.mapJSON { it.getString("artist").toCamelCase() }
-				?.joinToString()
+				?.toSet()
 
 		return manga.copy(
 			title = json.getString("title"),
@@ -608,7 +608,9 @@ internal class HitomiLaParser(context: ContentLoaderContext) : AbstractContentPa
 
 					"https://${subDomain}tn.$cdnDomain/webpbigtn/${thumbPathFromHash(hash)}/$hash.webp"
 				},
-			authors = setOfNotNull(author),
+			authors = author ?: manga.authors,
+            altTitles = json.getStringOrNull("japanese_title")?.trim()?.takeIf(String::isNotEmpty)
+                ?.let(::setOf) ?: manga.altTitles,
 			publicUrl = json.getString("galleryurl").toAbsoluteUrl(domain),
 			tags =
 				buildSet
@@ -642,7 +644,20 @@ internal class HitomiLaParser(context: ContentLoaderContext) : AbstractContentPa
 					uploadDate = dateFormat.parseSafe(json.getString("date").substringBeforeLast("-")),
 				),
 			),
-		)
+		).let { details ->
+            fun names(array: String, key: String): List<String>? = json.optJSONArray(array)?.let { values ->
+                (0 until values.length()).mapNotNull { values.optJSONObject(it)?.getStringOrNull(key) }
+            }
+            WebsiteWorkMetadata.attachFields(
+                details,
+                totalPages = json.optJSONArray("files")?.length() ?: Int.MIN_VALUE,
+                parodies = names("parodys", "parody"),
+                characters = names("characters", "character"),
+                groups = names("groups", "group"),
+                types = json.getStringOrNull("type")?.let(::listOf),
+                languages = (json.getStringOrNull("language_localname") ?: json.getStringOrNull("language"))?.let(::listOf),
+            )
+        }
 	}
 
 	private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.ENGLISH)

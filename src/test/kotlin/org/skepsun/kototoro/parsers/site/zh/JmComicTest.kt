@@ -46,6 +46,18 @@ import org.skepsun.kototoro.parsers.util.LinkResolver
 class JmComicTest {
 
     @Test
+    fun `factory list categories survive detail response without category fields`() = runTest {
+        val context = JmOfflineContext()
+        val parser = org.skepsun.kototoro.parsers.model.ContentParserSource.JMCOMIC.newParser(context)
+        val card = parser.getList(0, SortOrder.NEWEST, ContentListFilter(query = "ordinary query")).single()
+        val hook = parser.javaClass.getMethod("getDetailsMetadata", org.skepsun.kototoro.parsers.model.Content::class.java)
+        assertEquals(listOf("同人", "單本"), JSONObject(hook.invoke(parser, card) as String).getJSONArray("types").toList())
+        val details = parser.getDetails(card)
+        assertEquals(listOf("同人", "單本"), JSONObject(hook.invoke(parser, details) as String).getJSONArray("types").toList())
+        assertEquals(1, JSONObject(hook.invoke(parser, details) as String).getInt("chapter_count"))
+    }
+
+    @Test
     fun `factory entry exposes website metadata without extra requests`() = runTest {
         val context = JmOfflineContext()
         context.albumBody = JSONObject(context.albumBody).apply {
@@ -59,6 +71,8 @@ class JmComicTest {
         val requestCount = context.requests.size
         val hook = parser.javaClass.getMethod("getDetailsMetadata", org.skepsun.kototoro.parsers.model.Content::class.java)
         val payload = JSONObject(hook.invoke(parser, details) as String)
+        assertEquals(setOf("作者甲", "作者乙"), details.authors)
+        assertEquals(1, payload.getInt("chapter_count"))
         assertEquals(42, payload.getInt("total_pages"))
         assertEquals(listOf("原作一", "原作二"), payload.getJSONArray("parodies").toList())
         assertEquals(listOf("角色甲"), payload.getJSONArray("characters").toList())
@@ -467,7 +481,7 @@ class JmComicTest {
         assertEquals(originalFilter, filter)
         assertEquals(parser.generateUid("jm:654321"), card.id)
         assertEquals("繁體標題 123456", card.title)
-        assertEquals(setOf("作者甲"), card.authors)
+        assertEquals(setOf("作者甲", "作者乙"), card.authors)
         assertEquals("合成作品描述", card.description)
         assertEquals(setOf("劇情向", "全彩"), card.tags.map { it.title }.toSet())
         assertEquals("https://images.jm.invalid/media/albums/654321_3x4.jpg", card.coverUrl)
@@ -482,7 +496,7 @@ class JmComicTest {
         assertEquals(card.id, details.id)
         assertEquals(card.url, details.url)
         assertEquals(card.coverUrl, details.coverUrl)
-        assertEquals(setOf("作者甲"), details.authors)
+        assertEquals(setOf("作者甲", "作者乙"), details.authors)
         assertEquals(1, requireNotNull(details.chapters).size)
         assertTrue(context.businessRequests.all { it.url.encodedPath == "/album" })
     }

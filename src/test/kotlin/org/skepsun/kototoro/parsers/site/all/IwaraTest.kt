@@ -36,6 +36,42 @@ import org.skepsun.kototoro.parsers.util.LinkResolver
 
 class IwaraTest {
     @Test
+    fun `factory metadata keeps category and duration on final detail copy`() = runTest {
+        val context = OfflineContentLoaderContext(mapOf(DETAIL to "iwara/detail.json"), transformBody = { _, body ->
+            JSONObject(body).apply {
+                getJSONObject("user").put("name", "")
+                getJSONObject("file").put("duration", 244)
+                getJSONArray("tags").put(JSONObject("""{"id":"koikatsu","type":"category"}"""))
+            }.toString()
+        })
+        val parser = parser(context)
+        val details = parser.getDetails(content().copy(id = 987))
+        assertEquals(setOf("example"), details.authors)
+        val metadata = JSONObject(parser.javaClass.getMethod("getDetailsMetadata", Content::class.java)
+            .invoke(parser, details) as String)
+        assertEquals(244L, metadata.getLong("duration_seconds"))
+        assertEquals(listOf("koikatsu"), metadata.getJSONArray("types").toList())
+        assertTrue(!metadata.has("parodies"))
+        assertTrue(!metadata.has("characters"))
+        assertEquals(listOf(DETAIL), context.requests)
+    }
+
+    @Test
+    fun `factory metadata keeps explicit null duration distinct from a missing field`() = runTest {
+        val ctx = OfflineContentLoaderContext(mapOf(DETAIL to "iwara/detail.json"), transformBody = { _, body ->
+            JSONObject(body).apply { getJSONObject("file").put("duration", JSONObject.NULL) }.toString()
+        })
+        val parser = parser(ctx)
+        val details = parser.getDetails(content())
+        val value = JSONObject(parser.javaClass.getMethod("getDetailsMetadata", Content::class.java)
+            .invoke(parser, details) as String)
+        assertTrue(value.has("duration_seconds"))
+        assertTrue(value.isNull("duration_seconds"))
+        assertTrue(!value.has("subtitle_languages"))
+        assertTrue(!value.has("audio_languages"))
+    }
+
+    @Test
     fun `registered source is a video source`() {
         val source = ContentParserSource.entries.find { it.name == "IWARA" }
         assertNotNull(source, "Iwara must be registered in the generated source catalogue")
@@ -88,13 +124,13 @@ class IwaraTest {
     }
 
     @Test
-    fun `details separate uploader from authors escape text and keep one stable chapter`() = runTest {
+    fun `details expose account author escape text and keep one stable chapter`() = runTest {
         val parser = parser(OfflineContentLoaderContext(mapOf(DETAIL to "iwara/detail.json")))
         val details = parser.getDetails(content())
         assertEquals("Example animation", details.title)
-        assertTrue(details.authors.isEmpty())
+        assertEquals(setOf("Example Uploader"), details.authors)
         val doc = Jsoup.parse(requireNotNull(details.description))
-        assertTrue(doc.text().contains("上传者：Example Uploader"))
+        assertTrue(!doc.text().contains("上传者："))
         assertTrue(doc.text().contains("First line"))
         assertTrue(doc.select("script").isEmpty())
         assertEquals(setOf("animation", "mmd"), details.tags.map { it.key }.toSet())

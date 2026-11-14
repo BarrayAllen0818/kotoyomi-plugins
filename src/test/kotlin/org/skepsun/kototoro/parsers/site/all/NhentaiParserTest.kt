@@ -58,6 +58,10 @@ class NhentaiParserTest {
     @Test
     fun `details and pages use v2 paths and preserve existing identities`() = runBlocking {
         val ctx = NhOfflineContext()
+        ctx.gallery = JSONObject(ctx.gallery).apply {
+            getJSONArray("tags").put(JSONObject("""{"id":5,"name":"Fixture group","type":"group"}"""))
+                .put(JSONObject("""{"id":6,"name":"doujinshi","type":"category"}"""))
+        }.toString()
         val parser = NhentaiParser(ctx).also { ctx.parser = it }
         val original = parser.parseGalleryList(listDocument("src='/a.jpg'")).single()
         val factoryParser = org.skepsun.kototoro.parsers.model.ContentParserSource.NHENTAI.newParser(ctx)
@@ -69,6 +73,11 @@ class NhentaiParserTest {
         assertEquals(setOf("Fixture artist"), details.authors)
         val metadata = org.json.JSONObject(factoryParser.javaClass.getMethod("getDetailsMetadata", Content::class.java).invoke(factoryParser, details) as String)
         assertEquals(2, metadata.getInt("total_pages"))
+        assertEquals(setOf("Fixture alternate"), details.altTitles)
+        assertEquals(listOf("Fixture group"), metadata.getJSONArray("groups").toList())
+        assertEquals(listOf("doujinshi"), metadata.getJSONArray("types").toList())
+        assertEquals(listOf("chinese"), metadata.getJSONArray("languages").toList())
+        assertTrue(!metadata.has("chapter_count"))
         assertEquals(listOf("Fixture original"), metadata.getJSONArray("parodies").toList())
         assertEquals(listOf("Fixture character"), metadata.getJSONArray("characters").toList())
         assertEquals("chinese / translated", details.description)

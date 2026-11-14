@@ -7,22 +7,96 @@ import org.skepsun.kototoro.parsers.util.nullIfEmpty
 
 /** Optional website facts do not change Content's constructor or copy ABI. */
 public object WebsiteWorkMetadata {
-    private val records = java.util.Collections.synchronizedMap(java.util.WeakHashMap<Content, String>())
+    private val records = HashMap<ContentReference, String>()
+    private val queue = java.lang.ref.ReferenceQueue<Content>()
+
+    private class ContentReference(content: Content, queue: java.lang.ref.ReferenceQueue<Content>? = null) :
+        java.lang.ref.WeakReference<Content>(content, queue) {
+        private val identityHash = System.identityHashCode(content)
+        override fun hashCode(): Int = identityHash
+        override fun equals(other: Any?): Boolean = this === other ||
+            (other is ContentReference && get() != null && get() === other.get())
+    }
+
+    private fun prune() {
+        while (true) records.remove(queue.poll() ?: return)
+    }
+
+    private fun store(content: Content, value: String) {
+        prune()
+        records[ContentReference(content, queue)] = value
+    }
+
+    public data class RelatedWork(public val source: String, public val url: String, public val title: String)
 
     public fun attach(content: Content, totalPages: Int? = null,
         parodies: Collection<String> = emptyList(), characters: Collection<String> = emptyList(),
-    ): Content {
+    ): Content = attachFields(content, totalPages, parodies, characters)
+
+    /** Omitted fields preserve facts; a numeric null or an empty collection explicitly clears a field. */
+    public fun attachFields(
+        content: Content,
+        totalPages: Int? = Int.MIN_VALUE,
+        parodies: Collection<String>? = null,
+        characters: Collection<String>? = null,
+        groups: Collection<String>? = null,
+        producers: Collection<String>? = null,
+        types: Collection<String>? = null,
+        languages: Collection<String>? = null,
+        subtitleLanguages: Collection<String>? = null,
+        audioLanguages: Collection<String>? = null,
+        durationSeconds: Long? = Long.MIN_VALUE,
+        chapterCount: Int? = Int.MIN_VALUE,
+        series: Collection<String>? = null,
+        relatedWorks: Collection<RelatedWork>? = null,
+    ): Content = synchronized(records) {
         fun names(values: Collection<String>) = org.json.JSONArray(
             values.map(String::trim).filter(String::isNotEmpty).distinct(),
         )
-        records[content] = org.json.JSONObject().apply {
-            put("total_pages", totalPages?.takeIf { it > 0 } ?: org.json.JSONObject.NULL)
-            put("parodies", names(parodies))
-            put("characters", names(characters))
-        }.toString()
-        return content
+        val metadata = (get(content)?.let { org.json.JSONObject(it) } ?: org.json.JSONObject()).apply {
+            if (totalPages != Int.MIN_VALUE) put("total_pages", totalPages?.takeIf { it > 0 } ?: org.json.JSONObject.NULL)
+            parodies?.let { put("parodies", names(it)) }
+            characters?.let { put("characters", names(it)) }
+            groups?.let { put("groups", names(it)) }
+            producers?.let { put("producers", names(it)) }
+            types?.let { put("types", names(it)) }
+            languages?.let { put("languages", names(it)) }
+            subtitleLanguages?.let { put("subtitle_languages", names(it)) }
+            audioLanguages?.let { put("audio_languages", names(it)) }
+            if (durationSeconds != Long.MIN_VALUE) {
+                put("duration_seconds", durationSeconds?.takeIf { it > 0 } ?: org.json.JSONObject.NULL)
+            }
+            if (chapterCount != Int.MIN_VALUE) {
+                put("chapter_count", chapterCount?.takeIf { it > 0 } ?: org.json.JSONObject.NULL)
+            }
+            series?.let { put("series", names(it)) }
+            relatedWorks?.let { works ->
+                val values = works.map { work ->
+                    work.copy(source = work.source.trim(), url = work.url.trim(), title = work.title.trim())
+                }.filter { it.source.isNotEmpty() && it.url.isNotEmpty() && it.title.isNotEmpty() }
+                    .distinctBy { it.source to it.url }.map { work ->
+                        org.json.JSONObject().put("source", work.source).put("url", work.url).put("title", work.title)
+                    }
+                put("related_works", org.json.JSONArray(values))
+            }
+        }
+        if (metadata.length() > 0) store(content, metadata.toString())
+        content
     }
-    public fun get(content: Content): String? = records[content]
+
+    /** Copy only absent fields so a fresh detail response wins over earlier list metadata. */
+    public fun inherit(previous: Content, content: Content): Content = synchronized(records) {
+        val before = get(previous)?.let { org.json.JSONObject(it) } ?: return@synchronized content
+        val current = get(content)?.let { org.json.JSONObject(it) } ?: org.json.JSONObject()
+        before.keys().forEach { key -> if (!current.has(key)) current.put(key, before.get(key)) }
+        store(content, current.toString())
+        content
+    }
+
+    public fun get(content: Content): String? = synchronized(records) {
+        prune()
+        records[ContentReference(content)]
+    }
 }
 
 public data class Content(

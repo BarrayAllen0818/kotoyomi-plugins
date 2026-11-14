@@ -1,5 +1,6 @@
 package org.skepsun.kototoro.parsers.site.zh
 
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import org.jsoup.nodes.Document
@@ -646,12 +647,49 @@ internal class Hanime1(
             source = source,
         )
 
+        // 作品署名取自正文，固定为站名的 author 元信息不是创作署名。
+        val credit = doc.selectFirst("#video-artist-name")?.text()?.trim()?.takeIf(String::isNotEmpty)
+        val type = doc.selectFirst("a#video-artist-name + a")?.text()?.trim()?.takeIf(String::isNotEmpty)
+        val isAnime = type in setOf("裏番", "泡麵番")
+        val attributes = doc.select(".single-video-tag").filterNot { it.hasAttr("data-toggle") }.map {
+            it.text().removePrefix("# ").replace(Regex("""\s*\(\d+\)\s*$"""), "").trim()
+        }
+        val brand = metaDesc?.replace(Regex("""(?i)<br\s*/?>"""), "\n")?.let { description ->
+            Regex("""(?im)^\s*Brand\s*[:：]\s*([^\r\n<]+)""").find(description)?.groupValues?.get(1)?.trim()
+                ?.takeIf(String::isNotEmpty)
+        }
         return manga.copy(
+            title = doc.selectFirst("#shareBtn-title")?.text()?.trim()?.takeIf(String::isNotEmpty) ?: manga.title,
+            authors = credit?.let(::setOf) ?: manga.authors,
             description = metaDesc,
             largeCoverUrl = metaImage ?: manga.largeCoverUrl,
             tags = if (manga.tags.isEmpty()) tags else manga.tags,
             chapters = listOf(chapter),
-        )
+        ).let { details ->
+            val playlist = doc.selectFirst("#playlist-scroll").takeIf { isAnime }
+            val related = playlist?.children()?.mapNotNull { entry ->
+                val link = entry.selectFirst(".thumb-container a[href]") ?: return@mapNotNull null
+                val title = entry.selectFirst(".video-title")?.text()?.trim()?.takeIf(String::isNotEmpty)
+                    ?: return@mapNotNull null
+                val url = link.attrAsAbsoluteUrlOrNull("href") ?: return@mapNotNull null
+                val parsed = url.toHttpUrlOrNull() ?: return@mapNotNull null
+                if (parsed.host != domain || parsed.encodedPath != "/watch" || parsed.queryParameter("v").isNullOrBlank()) {
+                    return@mapNotNull null
+                }
+                if (url == details.publicUrl) return@mapNotNull null
+                org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.RelatedWork(source.name, url, title)
+            }
+            org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.attachFields(
+                details,
+                producers = brand?.let(::listOf),
+                types = type?.let(::listOf),
+                subtitleLanguages = listOf("中文").takeIf { attributes.contains("中文字幕") },
+                audioLanguages = listOf("中文").takeIf { attributes.contains("中文配音") },
+                durationSeconds = doc.selectFirst("meta[property=og:video:duration]")?.attr("content")
+                    ?.toLongOrNull() ?: Long.MIN_VALUE,
+                relatedWorks = related,
+            )
+        }
     }
 
     override suspend fun getPages(chapter: ContentChapter): List<ContentPage> {

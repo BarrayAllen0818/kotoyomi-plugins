@@ -41,6 +41,24 @@ class Rule34VideoTest {
     }
 
     @Test
+    fun `factory details expose characters duration and omit unclassified categories`() = runTest {
+        val context = OfflineContentLoaderContext(mapOf(DETAIL to "rule34video/detail.html"), transformBody = { _, body ->
+            body.replace("</body>", """<div class="vp-group"><div class="label">Characters</div>
+                <a href="/characters/example-hero/">Example Hero</a></div>
+                <script type="application/ld+json">{"@type":"VideoObject","duration":"PT1H2M3S"}</script></body>""")
+        })
+        val parser = source().newParser(context)
+        val details = parser.getDetails(content())
+        val metadata = org.json.JSONObject(parser.javaClass.getMethod("getDetailsMetadata", Content::class.java)
+            .invoke(parser, details) as String)
+        assertEquals(listOf("Example Hero"), metadata.getJSONArray("characters").toList())
+        assertEquals(3723L, metadata.getLong("duration_seconds"))
+        assertTrue(!metadata.has("parodies"))
+        assertTrue(!metadata.has("types"))
+        assertEquals(listOf(DETAIL), context.requests)
+    }
+
+    @Test
     fun `registered source is an adult video source`() {
         assertEquals(ContentType.HENTAI_VIDEO, source().contentType)
     }

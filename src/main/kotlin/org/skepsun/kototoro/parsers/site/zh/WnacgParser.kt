@@ -343,7 +343,11 @@ internal class WnacgParser(context: ContentLoaderContext) :
                             state = null,
                             authors = emptySet(),
                             source = source,
-                        )
+                        ).let { content ->
+                            org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.attachFields(
+                                content, types = tags.map { it.title }.takeIf { it.isNotEmpty() },
+                            )
+                        }
                     )
                 }
             }
@@ -398,7 +402,11 @@ internal class WnacgParser(context: ContentLoaderContext) :
                     state = null,
                     authors = emptySet(),
                     source = source,
-                )
+                ).let { content ->
+                    org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.attachFields(
+                        content, types = tags.map { it.title }.takeIf { it.isNotEmpty() },
+                    )
+                }
             }
         }
         return items.mapNotNull { li ->
@@ -451,7 +459,11 @@ internal class WnacgParser(context: ContentLoaderContext) :
                 state = null,
                 authors = emptySet(),
                 source = source,
-            )
+            ).let { content ->
+                org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.attachFields(
+                    content, types = tags.map { it.title }.takeIf { it.isNotEmpty() },
+                )
+            }
         }
     }
 
@@ -514,7 +526,13 @@ internal class WnacgParser(context: ContentLoaderContext) :
                 Regex("(?:頁數|页数)\\s*[:：]\\s*(\\d+)")
                     .find(doc.select("div.userwrap .uwconn").text())?.groupValues?.get(1)?.toIntOrNull()
             } else null
-            org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.attach(details, total)
+            org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.attachFields(
+                details,
+                totalPages = total ?: Int.MIN_VALUE,
+                types = doc.select(".bread a[href*=cate-], .breadcrumb a[href*=cate-]")
+                    .map { it.text().trim() }.filter(String::isNotEmpty).takeIf { it.isNotEmpty() },
+                chapterCount = if (doc.selectFirst("#sr_pub") != null) seriesChapters.size else Int.MIN_VALUE,
+            )
         }
     }
 

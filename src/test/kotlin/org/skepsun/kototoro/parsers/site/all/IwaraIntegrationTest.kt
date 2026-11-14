@@ -36,7 +36,7 @@ class IwaraIntegrationTest {
         for (item in list.take(6)) {
             val details = parser.getDetails(item)
             assertTrue(details.title.isNotBlank())
-            assertTrue(details.authors.isEmpty(), "Iwara uploader must not become an original author")
+            assertTrue(details.authors.isNotEmpty(), "Iwara author uses the published account name")
             try {
                 selected = parser.getPages(requireNotNull(details.chapters).single()).single()
                 tag = details.tags.firstOrNull()

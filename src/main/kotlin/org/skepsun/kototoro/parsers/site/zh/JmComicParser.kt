@@ -494,9 +494,8 @@ internal class JmParser(
             throw ParseException("JM 编号 $inputId: 缺少作品 name", "$baseUrl$path")
         }
 
-        // /album 的作者是数组；仅规范化本次响应，保持其他列表调用方的映射不变。
+        // /album 的作者数组由 parseComic 完整保留。
         json.put("id", returnedId)
-        json.put("author", (json.optJSONArray("author")?.opt(0) as? String).orEmpty())
         json.put("description", (json.opt("description") as? String).orEmpty())
         val comic = parseComic(json)
             ?: throw ParseException("JM 编号 $inputId: 无有效作品", "$baseUrl$path")
@@ -509,7 +508,7 @@ internal class JmParser(
                 }
             }
         }
-        return comic.copy(tags = tags)
+        return org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.inherit(comic, comic.copy(tags = tags))
     }
 
     private suspend fun categoryList(sort: String, page: Int, category: String?): List<Content> {
@@ -548,7 +547,13 @@ internal class JmParser(
     private fun parseComic(obj: JSONObject): Content? {
         val id = obj.optString("id").ifEmpty { obj.optString("album_id") }.ifEmpty { return null }
         val title = obj.optString("name").ifEmpty { return null }
-        val author = obj.optString("author")
+        val authors = when (val value = obj.opt("author")) {
+            is JSONArray -> (0 until value.length()).mapNotNull {
+                (value.opt(it) as? String)?.trim()?.takeIf(String::isNotEmpty)
+            }.toSet()
+            is String -> setOfNotNull(value.trim().takeIf(String::isNotEmpty))
+            else -> emptySet()
+        }
         val desc = obj.optString("description")
         val tags = buildSet {
             obj.optJSONObject("category")?.optString("title")?.takeIf { it.isNotBlank() }?.let { add(it) }
@@ -567,11 +572,11 @@ internal class JmParser(
             largeCoverUrl = cover,
             tags = tags.map { ContentTag(it, it, source) }.toSet(),
             state = null,
-            authors = if (author.isNotBlank()) setOf(author) else emptySet(),
+            authors = authors,
             description = desc,
             chapters = null,
             source = source,
-        )
+        ).let { org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.attachFields(it, types = tags.takeIf { it.isNotEmpty() }) }
     }
 
     public fun getDetailsMetadata(content: Content): String? =
@@ -586,7 +591,9 @@ internal class JmParser(
         }
         val jsonText = apiGet("/album?id=$id")
         val json = JSONObject(jsonText)
-        val author = json.optJSONArray("author")?.optString(0).orEmpty()
+        val authors = json.optJSONArray("author")?.let { values ->
+            (0 until values.length()).mapNotNull { (values.opt(it) as? String)?.trim()?.takeIf(String::isNotEmpty) }.toSet()
+        }
         val desc = json.optString("description")
         val tags: Set<ContentTag> = json.optJSONArray("tags")?.let { arr ->
             val list = mutableListOf<ContentTag>()
@@ -638,7 +645,7 @@ internal class JmParser(
         val cover = "${imageHost}/media/albums/${id}_3x4.jpg"
         return manga.copy(
             title = json.optString("name", manga.title).ifBlank { manga.title },
-            authors = if (author.isNotBlank()) setOf(author) else manga.authors,
+            authors = authors ?: manga.authors,
             description = desc.ifBlank { manga.description },
             coverUrl = cover,
             largeCoverUrl = cover,
@@ -651,8 +658,13 @@ internal class JmParser(
                     (array.opt(index) as? String)?.trim()?.takeIf(String::isNotEmpty)
                 }
             }
-            org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.attach(
-                details, json.opt("total_photos")?.toString()?.toIntOrNull(), names("works"), names("actors"),
+            org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.inherit(manga, details)
+            org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.attachFields(
+                details,
+                totalPages = if (json.has("total_photos")) json.opt("total_photos")?.toString()?.toIntOrNull() else Int.MIN_VALUE,
+                parodies = if (json.has("works")) names("works") else null,
+                characters = if (json.has("actors")) names("actors") else null,
+                chapterCount = if (series != null) chapters.size.takeIf { series.length() > 0 } else Int.MIN_VALUE,
             )
         }
     }

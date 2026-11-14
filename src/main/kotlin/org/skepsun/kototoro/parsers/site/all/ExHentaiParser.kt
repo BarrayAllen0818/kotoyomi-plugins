@@ -288,6 +288,8 @@ internal class ExHentaiParser(
             largeCoverUrl = cover?.styleValueOrNull("background")?.cssUrl()
                 ?: cover?.selectFirst("img")?.attrAsAbsoluteUrlOrNull("src"),
             tags = manga.tags + tags,
+            authors = if (tagList != null) tags.filter { it.key.startsWith("artist:") }
+                .map { it.key.substringAfter(':') }.toSet() else manga.authors,
             description = buildDetailsDescription(
                 tagList = tagList,
                 fileSize = fileSize,
@@ -318,12 +320,17 @@ internal class ExHentaiParser(
                 chapters.toList()
             },
         ).let { details ->
-            org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.attach(
+            org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.attachFields(
                 details,
                 length?.let { Regex("^(\\d+)\\s+pages?$", RegexOption.IGNORE_CASE).find(it) }
-                    ?.groupValues?.get(1)?.toIntOrNull(),
-                tags.filter { it.key.startsWith("parody:") }.map { it.key.substringAfter(':') },
-                tags.filter { it.key.startsWith("character:") }.map { it.key.substringAfter(':') },
+                    ?.groupValues?.get(1)?.toIntOrNull() ?: Int.MIN_VALUE,
+                tags.filter { it.key.startsWith("parody:") }.map { it.key.substringAfter(':') }.takeIf { tagList != null },
+                tags.filter { it.key.startsWith("character:") }.map { it.key.substringAfter(':') }.takeIf { tagList != null },
+                groups = tags.filter { it.key.startsWith("group:") }.map { it.key.substringAfter(':') }.takeIf { tagList != null },
+                types = root.selectFirst("#gdc .cs, #gdc .cn")?.text()?.let(::listOf),
+                languages = tags.filter { it.key.startsWith("language:") }
+                    .map { it.key.substringAfter(':') }.filterNot { it in setOf("translated", "rewrite") }
+                    .takeIf { tagList != null },
             )
         }
     }

@@ -104,7 +104,10 @@ internal class Iwara(context: ContentLoaderContext) : PagedContentParser(context
 
     override suspend fun getDetails(manga: Content): Content {
         val id = videoId(manga.url) ?: throw ParseException("Iwara: invalid video URL", manga.url)
-        return parseVideo(fetchVideo(id), details = true).copy(id = manga.id, url = manga.url, source = manga.source)
+        val parsed = parseVideo(fetchVideo(id), details = true)
+        return org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.inherit(
+            parsed, parsed.copy(id = manga.id, url = manga.url, source = manga.source),
+        )
     }
 
     override suspend fun resolveLink(resolver: LinkResolver, link: HttpUrl): Content? {
@@ -216,9 +219,9 @@ internal class Iwara(context: ContentLoaderContext) : PagedContentParser(context
         val tags = json.optJSONArray("tags")?.mapItems("https://$domain$path") { parseTag(it) }?.toSet().orEmpty()
         val cover = thumbnail(json)
         val user = json.optJSONObject("user")
-        val uploader = user?.getStringOrNull("name") ?: user?.getStringOrNull("username")
+        val uploader = user?.getStringOrNull("name")?.trim()?.takeIf(String::isNotEmpty)
+            ?: user?.getStringOrNull("username")?.trim()?.takeIf(String::isNotEmpty)
         val description = if (details) buildString {
-            uploader?.let { append("<p>上传者：").append(Entities.escape(it)).append("</p>") }
             json.getStringOrNull("body")?.let {
                 append("<p>").append(Entities.escape(it).replace("\n", "<br>")).append("</p>")
             }
@@ -237,8 +240,18 @@ internal class Iwara(context: ContentLoaderContext) : PagedContentParser(context
                 ContentRating.SAFE
             } else ContentRating.ADULT,
             coverUrl = cover, largeCoverUrl = cover, tags = tags, state = ContentState.FINISHED,
-            authors = emptySet(), description = description, chapters = chapter, source = source,
-        )
+            authors = setOfNotNull(uploader), description = description, chapters = chapter, source = source,
+        ).let { content ->
+            org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.attachFields(
+                content,
+                durationSeconds = if (json.optJSONObject("file")?.has("duration") == true) {
+                    (json.getJSONObject("file").opt("duration") as? Number)?.toLong()
+                } else Long.MIN_VALUE,
+                types = json.optJSONArray("tags")?.mapItems(content.publicUrl) { it }
+                    ?.filter { it.getStringOrNull("type") == "category" }
+                    ?.mapNotNull { it.getStringOrNull("id") },
+            )
+        }
     }
 
     private fun thumbnail(json: JSONObject): String? {

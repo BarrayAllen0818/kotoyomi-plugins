@@ -1092,6 +1092,9 @@ internal class NhentaiParser(context: ContentLoaderContext) :
 		val authors = mutableSetOf<String>()
         val parodies = mutableSetOf<String>()
         val characters = mutableSetOf<String>()
+        val groups = mutableSetOf<String>()
+        val types = mutableSetOf<String>()
+        val languages = mutableSetOf<String>()
         val tags = json.optJSONArray("tags")?.let { arr ->
             buildSet {
                 for (i in 0 until arr.length()) {
@@ -1111,6 +1114,11 @@ internal class NhentaiParser(context: ContentLoaderContext) :
 						if (type == "artist") authors.add(name)
                         if (type == "parody") parodies.add(name)
                         if (type == "character") characters.add(name)
+                        if (type == "group") groups.add(name)
+                        if (type == "category") types.add(name)
+                        if (type == "language" && !name.equals("translated", true) && !name.equals("rewrite", true)) {
+                            languages.add(name)
+                        }
 						add(ContentTag(name, name, source))
 						// Backup: derive language by id if not set
 						if (type == "language") {
@@ -1145,6 +1153,11 @@ internal class NhentaiParser(context: ContentLoaderContext) :
 
         return manga.copy(
             title = title,
+            altTitles = json.optJSONObject("title")?.let { titles ->
+                listOf("english", "japanese", "pretty").mapNotNull { key ->
+                    (titles.opt(key) as? String)?.trim()?.takeIf { it.isNotEmpty() && it != title }
+                }.toSet()
+            } ?: manga.altTitles,
             tags = if (tags.isNotEmpty()) tags else manga.tags,
             chapters = listOf(
                 ContentChapter(
@@ -1162,10 +1175,16 @@ internal class NhentaiParser(context: ContentLoaderContext) :
             contentRating = ContentRating.ADULT,
             description = langTag?.let { if (translated) "$it / translated" else it } ?: manga.description,
             coverUrl = coverUrl,
-            authors = if (authors.isNotEmpty()) authors else manga.authors,
+            authors = if (json.has("tags")) authors else manga.authors,
         ).let {
-            org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.attach(
-                it, json.opt("num_pages")?.toString()?.toIntOrNull(), parodies, characters,
+            org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.attachFields(
+                it,
+                totalPages = if (json.has("num_pages")) json.opt("num_pages")?.toString()?.toIntOrNull() else Int.MIN_VALUE,
+                parodies = parodies.takeIf { json.has("tags") },
+                characters = characters.takeIf { json.has("tags") },
+                groups = groups.takeIf { json.has("tags") },
+                types = types.takeIf { json.has("tags") },
+                languages = languages.takeIf { json.has("tags") },
             )
         }
     }
