@@ -5,14 +5,14 @@ category: project
 status: active
 tags: [sources, user-preferences]
 created: "2026-11-09T21:09:48"
-updated: "2026-11-14T08:27:02"
+updated: "2026-11-15T03:48:59"
 ---
 
 
 <!-- compiled_truth -->
 ## 网站资料范围与证据边界
 
-本页记录网站本身公开提供的作品信息，包括产品当前不提取的日期、统计、发布与访问状态。产品需要提取哪些字段以及怎样显示，见 [EDD/PRD.md](../../EDD/PRD.md#作品搜索信息范围)。事实表中的“有”表示字段或区域已观察到，不表示每部作品都非空，也不表示当前插件或网站搜索支持此字段。
+本页记录网站本身公开提供的作品信息，包括产品当前不提取的日期、统计、发布与访问状态。产品需要提取哪些字段以及怎样显示，见 [docs/PRD.md](../../docs/PRD.md#作品搜索信息范围)。事实表中的“有”表示字段或区域已观察到，不表示每部作品都非空，也不表示当前插件或网站搜索支持此字段。
 
 核查覆盖 JM、NHentai、WNACG、Hitomi、EH、Hanime1、Rule34Video、Iwara。HA 当前对应 Hanime1（hanime1.me）；此前 Hanime.tv 的接口结论不适用于它。Hanime1 分里番与其他类型记录；其他类型已检查的作品样本为2D动画，未逐类核查3DCG、MMD等全部类目。
 
@@ -102,7 +102,7 @@ updated: "2026-11-14T08:27:02"
 
 ## 产品要求的位置
 
-[要提取的字段与用途](../../EDD/PRD.md#作品搜索信息范围)；[详情页分行展示](../../EDD/PRD.md#详情页作品信息展示)。
+[要提取的字段与用途](../../docs/PRD.md#作品搜索信息范围)；[详情页分行展示](../../docs/PRD.md#详情页作品信息展示)。
 
 
 ## Timeline
@@ -147,4 +147,10 @@ updated: "2026-11-14T08:27:02"
   kind: decision
   summary: "核对并修正 Iwara 新增列的表格分隔，补明空字段符号含义"
   source: "2026-11-14 同次迁移后的表格校验"
+  affects: [enabled-sources]
+
+- time: 2026-11-15T03:48:59
+  kind: decision
+  summary: "需求与缺陷文档从 EDD 迁移至 docs，更新现行引用并保留历史时间线"
+  source: "2026-11-15 用户确认插件、宿主及两边 Brain 的文档迁移范围"
   affects: [enabled-sources]

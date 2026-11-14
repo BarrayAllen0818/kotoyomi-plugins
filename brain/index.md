@@ -1,6 +1,6 @@
 # Brain Index
 
-_Auto-generated. Last updated 2026-11-14T00:27:02.315Z._
+_Auto-generated. Last updated 2026-11-14T19:48:59.661Z._
 
 - [enabled-sources](pages/enabled-sources.md) — category: project | tags: [sources, user-preferences] | ## 网站资料范围与证据边界
 - [jm-id-direct-detail](pages/jm-id-direct-detail.md) — category: ? | status: ? | ## 已确认需求
