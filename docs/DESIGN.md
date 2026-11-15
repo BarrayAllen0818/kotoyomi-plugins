@@ -1,6 +1,6 @@
 # 作品资料、搜索与详情展示方案
 
-状态：Hanime1 品牌返修已随插件 1.0.147 发布，2026-11-15 用户使用验收通过；Iwara、Rule34Video 用户使用验收已通过。宿主配套实现已构建安装，宿主新增资料与详情展示的整体验收尚未完成。Hanime1 本次验证、发布及验收证据见 [BUG-002](BUG.md#bug-002-简介中双语标注的品牌漏取)。
+状态：本轮按已确认 PRD 先调整插件，宿主暂不修改。已删除插件品牌、独立系列的提取或传递能力，增加 Rule34Video 明确英语字幕标签的识别；本轮使用验收尚未完成。此前 1.0.147 品牌返修的历史证据见 [BUG-002](BUG.md#bug-002-简介中双语标注的品牌漏取)。
 
 ## 依据与范围
 
@@ -12,9 +12,11 @@
 
 复用 `WebsiteWorkMetadata`、正式工厂的 `ContentParserWrapper.getDetailsMetadata` 和宿主 `withDetailsMetadataFrom`；不改变插件 `Content` 构造及复制方法的二进制接口。标题、作者等基础资料继续使用现有字段，补充资料保存在现有 `source_data.kotoyomi_metadata` 中。
 
-双方使用同一 JSON 字段约定：沿用 `total_pages`、`parodies`、`characters`，扩展 `groups`、`producers`、`types`、`languages`、`subtitle_languages`、`audio_languages`、`duration_seconds`、`chapter_count`、`series`、`related_works`。关联作品包含 `source`、`url`、`title`；不保存临时媒体地址。宿主的漫画／视频内容种类与网站作品类型分别处理。
+插件输出沿用现有 JSON 字段约定：`total_pages`、`parodies`、`characters`、`groups`、`types`、`languages`、`subtitle_languages`、`audio_languages`、`duration_seconds`、`chapter_count`、`related_works`。`producers`、`series` 已从插件辅助模型移除；未修改 `Content` 的构造、复制接口或正式工厂的可选资料读取方法。关联作品包含 `source`、`url`、`title`；不保存临时媒体地址。宿主的漫画／视频内容种类与网站作品类型分别处理。
 
 联网更新依据原始 JSON 的字段存在性与数据库旧资料逐字段合并。省略字段表示不更新，明确空值表示清除，错型值不覆盖旧值；保留其他 `source_data` 内容。列表只更新列表返回的资料，不覆盖已取得的完整详情，也不将列表结果标记为详情已加载。完整目录仍使用现有章节存储；章节数只由网站明确的完整目录取得。
+
+本轮插件不再输出品牌和独立系列，但不会向宿主发送清空旧资料的补丁。现有宿主仍保留此前保存的字段，后续宿主调整再处理；“字幕”“配音”仍通过原来的 `subtitle_languages`、`audio_languages` 字段传递，以兼容当前宿主。
 
 ## 查询与显示
 
@@ -22,7 +24,7 @@
 
 网站搜索继续服从每个来源已经声明的能力；新增本地字段不自动成为网站搜索能力。详情中的具体名称通过现有搜索选择弹窗传递单个名称和字段类别，不支持的入口说明原因，不退化为关键词后声称准确执行了字段条件。
 
-Android 详情保留现有面板、配色及其他区域，将常驻资料组织成 PRD 规定的四组。名称点击范围彼此独立，分隔符及空白不响应点击；章节项保留原目录事件。非常驻资料使用原位展开，编号复用系统复制提示。展示函数不访问网站或重建整份作品资料。
+Android 详情的后续目标以 [PRD 展示要求](PRD.md#详情页作品信息展示)为准；本轮不修改宿主界面、角标或搜索实现。
 
 ## 标准备份与重新获取
 
@@ -37,6 +39,16 @@ Android 详情保留现有面板、配色及其他区域，将常驻资料组织
 逐站点离线验证实际字段，回归相应阅读或视频解析；线上检查只报告实际取得的响应。宿主定向测试后构建 Debug APK，插件构建并经现有仓库发布。构建、安装、线上检查与用户实际体验分别记录，不以其中一项代替其他项。
 
 ## 当前验证记录
+
+### 2026-11-15 插件字段调整
+
+- 本轮仅修改插件仓库。生产代码覆盖辅助资料模型、Hanime1 和 Rule34Video；所有静态调用已编译，正式插件工厂继续通过 `getDetailsMetadata` 返回可选 JSON，不修改宿主所用的 `Content` 构造及复制接口。
+- 修改前定向运行 40 项离线检查，7 项因旧品牌仍输出或英语字幕未输出而失败；修改后六个测试类共 156 项通过，0 失败、0 错误、0 跳过。覆盖正式入口、品牌标注不再单独提取但简介保留、作者和关联作品保留、明确英语字幕标签、歧义或异站标签不误判、无额外请求，以及 JM、NH、EH、Hitomi、WNACG、Iwara 相关回归。
+- 实际执行命令：`gradlew.bat test --tests org.skepsun.kototoro.parsers.site.all.ExHentaiSearchTest --tests org.skepsun.kototoro.parsers.site.en.Rule34VideoTest --tests org.skepsun.kototoro.parsers.site.all.NhentaiParserTest --tests org.skepsun.kototoro.parsers.site.all.IwaraTest --tests org.skepsun.kototoro.parsers.site.zh.JmComicTest --tests org.skepsun.kototoro.parsers.site.zh.JmComicResponseTest --tests org.koitharu.kotatsu.parsers.site.zh.WnacgReadTest --tests org.koitharu.kotatsu.parsers.site.galleryadults.zh.WnacgReadFlowTest jar pluginDexClasspath --init-script .github/scripts/plugin-classpath.gradle --no-daemon --console=plain`。后两个旧包名未匹配实际测试类，没有运行 WNACG 真实请求用例；WNACG 离线资料断言由 `ExHentaiSearchTest` 覆盖。
+- `HANIME1_INTEGRATION_TEST=1` 下单独执行 `Hanime1IntegrationTest`，首次请求因 `connect timed out` 失败，未到达字段断言。本次不计为线上通过；请求阶段没有响应、当前无此前本机代理端口，未变更系统网络设置。Rule34Video 英语字幕标签依据本对话此前实际取得的网站标签目录及分类页，本轮由离线正式入口验证；不扩大为新增字段完整线上取值已通过。
+- JVM JAR、运行时 classpath 收集及 D8 9.3.16 打包成功；使用 Android 34 API 和 `--min-api 21`，D8 无警告。插件仅含 `classes.dex`，SHA-256 为 `db1038bbc67139ac0d9bc9721f24db4d130d0a320640ed3eed2f6bc5690a16f6`。发布脚本的 9 项检查通过，代码审查未发现未处理缺陷；宿主界面及设备使用验收尚未进行。
+
+### 此前验证记录
 
 - 插件源码 `35b54ab3`：适用于当前输入的离线证据共 144 项，分轮取得；正式工厂覆盖资料提取与无额外请求。JVM JAR 与 D8 9.3.16 打包通过，D8 日志为空。插件仅包含 `classes.dex`，SHA-256 为 `fd5dda40f9814bb1f59bcfe666f3cf83e377daab69f715096860f894d8f56721`。
 - 1.0.146 发布提交 `b59d2fd4173b7eca1fd4c9ad416feceb0ab4e631`，既有仓库 URL 的索引与实际下载哈希核对通过；证据见忽略目录中的 `build/metadata-publish.log`。

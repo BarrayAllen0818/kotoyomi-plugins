@@ -36,7 +36,6 @@ class Hanime1IntegrationTest {
         val context = Hanime1IntegrationContext()
         try {
             val parser = ContentParserSource.HANIME1.newParser(context)
-            var checkedBrands = 0
             var checkedSubtitles = 0
             for (id in listOf(409178, 409177, 408317, 408319)) {
                 val url = "https://${parser.domain}/watch?v=$id"
@@ -71,18 +70,8 @@ class Hanime1IntegrationTest {
                 assertFalse(details.description.isNullOrBlank())
                 assertEquals(1, details.chapters.orEmpty().size)
 
-                // 网页简介以双语行标注品牌；独立按行取得预期值，不复用产品匹配表达式。
-                val description = requireNotNull(details.description)
-                    .replace(Regex("""(?i)<br\s*/?>"""), "\n")
-                val brand = description.lineSequence().map(String::trim)
-                    .firstOrNull { it.startsWith("Brand / ブランド:") }
-                    ?.substringAfter(':')?.trim()?.takeIf(String::isNotEmpty)
-                if (brand != null) {
-                    assertEquals(listOf(brand), payload.getJSONArray("producers").toList())
-                    checkedBrands++
-                } else {
-                    assertFalse(payload.has("producers"))
-                }
+                assertFalse(payload.has("producers"))
+                assertFalse(payload.has("series"))
                 val attributes = page.select(".single-video-tag:not([data-toggle])").map {
                     it.text().removePrefix("# ").substringBefore(" (").trim()
                 }
@@ -110,9 +99,8 @@ class Hanime1IntegrationTest {
                 }
                 assertFalse(payload.has("parodies"))
                 assertFalse(payload.has("characters"))
-                println("HANIME1 details $id: HTTP 200, $protocol, metadata checked, brand=$brand")
+                println("HANIME1 details $id: HTTP 200, $protocol, metadata checked, brand and series absent")
             }
-            assertTrue(checkedBrands > 0, "Current samples must exercise the bilingual brand field")
             assertTrue(checkedSubtitles > 0, "Current samples must exercise subtitle language")
         } finally {
             context.httpClient.dispatcher.executorService.shutdownNow()

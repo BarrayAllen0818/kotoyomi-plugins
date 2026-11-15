@@ -40,14 +40,12 @@ public object WebsiteWorkMetadata {
         parodies: Collection<String>? = null,
         characters: Collection<String>? = null,
         groups: Collection<String>? = null,
-        producers: Collection<String>? = null,
         types: Collection<String>? = null,
         languages: Collection<String>? = null,
         subtitleLanguages: Collection<String>? = null,
         audioLanguages: Collection<String>? = null,
         durationSeconds: Long? = Long.MIN_VALUE,
         chapterCount: Int? = Int.MIN_VALUE,
-        series: Collection<String>? = null,
         relatedWorks: Collection<RelatedWork>? = null,
     ): Content = synchronized(records) {
         fun names(values: Collection<String>) = org.json.JSONArray(
@@ -58,7 +56,6 @@ public object WebsiteWorkMetadata {
             parodies?.let { put("parodies", names(it)) }
             characters?.let { put("characters", names(it)) }
             groups?.let { put("groups", names(it)) }
-            producers?.let { put("producers", names(it)) }
             types?.let { put("types", names(it)) }
             languages?.let { put("languages", names(it)) }
             subtitleLanguages?.let { put("subtitle_languages", names(it)) }
@@ -69,7 +66,6 @@ public object WebsiteWorkMetadata {
             if (chapterCount != Int.MIN_VALUE) {
                 put("chapter_count", chapterCount?.takeIf { it > 0 } ?: org.json.JSONObject.NULL)
             }
-            series?.let { put("series", names(it)) }
             relatedWorks?.let { works ->
                 val values = works.map { work ->
                     work.copy(source = work.source.trim(), url = work.url.trim(), title = work.title.trim())
