@@ -1,6 +1,6 @@
 # 作品资料、搜索与详情展示方案
 
-状态：本轮按已确认 PRD 先调整插件，宿主暂不修改。已删除插件品牌、独立系列的提取或传递能力，增加 Rule34Video 明确英语字幕标签的识别；本轮使用验收尚未完成。此前 1.0.147 品牌返修的历史证据见 [BUG-002](BUG.md#bug-002-简介中双语标注的品牌漏取)。
+状态：本轮按已确认 PRD 先调整插件，宿主暂不修改。已删除插件品牌、独立系列的提取或传递能力，增加 Rule34Video 明确英语字幕标签的识别；1.0.148 已发布且原仓库 URL 下载哈希核验通过，本轮使用验收尚未完成。此前 1.0.147 品牌返修的历史证据见 [BUG-002](BUG.md#bug-002-简介中双语标注的品牌漏取)。
 
 ## 依据与范围
 
@@ -45,8 +45,10 @@ Android 详情的后续目标以 [PRD 展示要求](PRD.md#详情页作品信息
 - 本轮仅修改插件仓库。生产代码覆盖辅助资料模型、Hanime1 和 Rule34Video；所有静态调用已编译，正式插件工厂继续通过 `getDetailsMetadata` 返回可选 JSON，不修改宿主所用的 `Content` 构造及复制接口。
 - 修改前定向运行 40 项离线检查，7 项因旧品牌仍输出或英语字幕未输出而失败；修改后六个测试类共 156 项通过，0 失败、0 错误、0 跳过。覆盖正式入口、品牌标注不再单独提取但简介保留、作者和关联作品保留、明确英语字幕标签、歧义或异站标签不误判、无额外请求，以及 JM、NH、EH、Hitomi、WNACG、Iwara 相关回归。
 - 实际执行命令：`gradlew.bat test --tests org.skepsun.kototoro.parsers.site.all.ExHentaiSearchTest --tests org.skepsun.kototoro.parsers.site.en.Rule34VideoTest --tests org.skepsun.kototoro.parsers.site.all.NhentaiParserTest --tests org.skepsun.kototoro.parsers.site.all.IwaraTest --tests org.skepsun.kototoro.parsers.site.zh.JmComicTest --tests org.skepsun.kototoro.parsers.site.zh.JmComicResponseTest --tests org.koitharu.kotatsu.parsers.site.zh.WnacgReadTest --tests org.koitharu.kotatsu.parsers.site.galleryadults.zh.WnacgReadFlowTest jar pluginDexClasspath --init-script .github/scripts/plugin-classpath.gradle --no-daemon --console=plain`。后两个旧包名未匹配实际测试类，没有运行 WNACG 真实请求用例；WNACG 离线资料断言由 `ExHentaiSearchTest` 覆盖。
-- `HANIME1_INTEGRATION_TEST=1` 下单独执行 `Hanime1IntegrationTest`，首次请求因 `connect timed out` 失败，未到达字段断言。本次不计为线上通过；请求阶段没有响应、当前无此前本机代理端口，未变更系统网络设置。Rule34Video 英语字幕标签依据本对话此前实际取得的网站标签目录及分类页，本轮由离线正式入口验证；不扩大为新增字段完整线上取值已通过。
+- `HANIME1_INTEGRATION_TEST=1` 下单独执行 `Hanime1IntegrationTest`，首轮因 `connect timed out` 失败，未到达字段断言。当时本机没有此前代理端口；随后检测到 `127.0.0.1:7892` 恢复监听，沿用该代理仅为测试进程设置 `HTTPS_PROXY`，未变更系统网络设置。补跑 1 项线上检查成功，四部真实作品均 HTTP/2 200，正式工厂确认作者、字幕及关联作品保持有效，品牌和独立系列均不输出；首轮失败仍保留为事实。Rule34Video 英语字幕标签依据本对话此前实际取得的网站标签目录及分类页，本轮由离线正式入口验证，不扩大为新增字段完整线上取值已通过。
 - JVM JAR、运行时 classpath 收集及 D8 9.3.16 打包成功；使用 Android 34 API 和 `--min-api 21`，D8 无警告。插件仅含 `classes.dex`，SHA-256 为 `db1038bbc67139ac0d9bc9721f24db4d130d0a320640ed3eed2f6bc5690a16f6`。发布脚本的 9 项检查通过，代码审查未发现未处理缺陷；宿主界面及设备使用验收尚未进行。
+- 源码 `4db26822ac764d93d93eee44e402f6f18f53238a` 已推送 `origin/codex/plugin-metadata-fields`，首次连接重置后核对远端分支尚未建立，再推送成功；未合入源码主线。发布提交 `9f0ebede9a4a231591fc3598a77a9b80b34f6855` 保留 `repo` 历史，版本由远端索引 147 递增为 1.0.148。初次 HTTP 索引仍为 147，之后直接复核既有 URL 的 `index.min.json` 返回 148、1.0.148，`apk/plugin.jar` 下载 1035605 字节，SHA-256 与上述产物一致；没有重复构建或发布。发布候选工作树保留于 `build/plugin-releases/candidate-ksua_j88`。
+- 最后仅调整测试函数排版后重跑 `ExHentaiSearchTest`、`Rule34VideoTest`，40 项通过；生产源码未变，前述 156 项与 D8 产物证据继续适用。验收时通过 Kotoyomi 原仓库 URL 更新至 1.0.148，再刷新 Hanime1、Rule34Video 作品详情；现有宿主已存品牌值、字段显示名称、视频版本与角标仍待宿主后续实现，不能以这些未变行为判断插件输出失败。
 
 ### 此前验证记录
 
