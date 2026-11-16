@@ -41,6 +41,45 @@ class Rule34VideoTest {
     }
 
     @Test
+    fun `factory extracts English subtitles from the explicit site tag without extra requests`() = runTest {
+        val context = OfflineContentLoaderContext(mapOf(DETAIL to "rule34video/detail.html"), transformBody = { _, body ->
+            body.replace("</body>", """<div class="vp-tags">
+                <a href="/tags/english-subtitles/">english subtitles</a>
+                <a href="/tags/english-subtitles/">English subtitles</a></div></body>""")
+        })
+        val parser = source().newParser(context)
+        val details = parser.getDetails(content())
+        val metadata = org.json.JSONObject(parser.javaClass.getMethod("getDetailsMetadata", Content::class.java)
+            .invoke(parser, details) as String)
+        assertEquals(listOf("英语"), metadata.getJSONArray("subtitle_languages").toList())
+        assertTrue(!metadata.has("audio_languages"))
+        assertTrue(!metadata.has("languages"))
+        assertTrue(details.tags.any { it.key == "tags:english-subtitles" })
+        assertEquals(listOf(DETAIL), context.requests)
+    }
+
+    @Test
+    fun `factory leaves languages absent for ambiguous tags category names and description mentions`() = runTest {
+        val context = OfflineContentLoaderContext(mapOf(DETAIL to "rule34video/detail.html"), transformBody = { _, body ->
+            body.replace("</body>", """<div class="vp-tags">
+                <a href="/tags/english/">English</a>
+                <a href="/categories/english-subtitles/">english subtitles</a>
+                <a href="/tags/example/">english subtitles</a>
+                <a href="/tags/no-english-subtitles/">no English subtitles</a>
+                <a href="https://foreign.example/tags/english-subtitles/">english subtitles</a>
+                </div><p>English subtitles, Chinese dubbing</p></body>""")
+        })
+        val parser = source().newParser(context)
+        val details = parser.getDetails(content())
+        val raw = parser.javaClass.getMethod("getDetailsMetadata", Content::class.java).invoke(parser, details) as String?
+        val metadata = org.json.JSONObject(raw ?: "{}")
+        assertTrue(!metadata.has("subtitle_languages"))
+        assertTrue(!metadata.has("audio_languages"))
+        assertTrue(!metadata.has("languages"))
+        assertEquals(listOf(DETAIL), context.requests)
+    }
+
+    @Test
     fun `factory details expose characters duration and omit unclassified categories`() = runTest {
         val context = OfflineContentLoaderContext(mapOf(DETAIL to "rule34video/detail.html"), transformBody = { _, body ->
             body.replace("</body>", """<div class="vp-group"><div class="label">Characters</div>

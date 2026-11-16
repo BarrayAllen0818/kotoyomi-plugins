@@ -83,7 +83,7 @@ class ExHentaiSearchTest {
     }
 
     @Test
-    fun `Hanime1 factory preserves creator credits regardless of video type and only uses explicit brands`() = runBlocking {
+    fun `Hanime1 factory preserves credits languages and related works without brand or series`() = runBlocking {
         val url = "https://hanime1.me/watch?v=42"
         var type = "裏番"
         var credit = "Alice Creator"
@@ -101,7 +101,7 @@ class ExHentaiSearchTest {
         val anime = parser.getDetails(metadataContent(ContentParserSource.HANIME1, url))
         val animeMetadata = metadata(parser, anime)
         assertEquals(setOf("Alice Creator"), anime.authors)
-        assertEquals(listOf("Explicit Brand"), animeMetadata.getJSONArray("producers").toList())
+        assertTrue(!animeMetadata.has("producers"))
         assertTrue(!animeMetadata.has("groups"))
         assertTrue(!animeMetadata.has("series"))
         assertEquals(listOf("裏番"), animeMetadata.getJSONArray("types").toList())
@@ -117,7 +117,7 @@ class ExHentaiSearchTest {
         val other = parser.getDetails(metadataContent(ContentParserSource.HANIME1, url))
         val otherMetadata = metadata(parser, other)
         assertEquals(setOf("Studio Credit"), other.authors)
-        assertEquals(listOf("Explicit Brand"), otherMetadata.getJSONArray("producers").toList())
+        assertTrue(!otherMetadata.has("producers"))
         assertTrue(!otherMetadata.has("related_works"))
         assertTrue(!otherMetadata.has("series"))
         assertTrue(!otherMetadata.has("parodies"))
@@ -148,7 +148,10 @@ class ExHentaiSearchTest {
         ],
         delimiter = '|',
     )
-    fun `Hanime1 factory only extracts explicitly labelled brands`(description: String, expected: String?) = runBlocking {
+    fun `Hanime1 factory ignores all former brand labels and preserves description`(
+        description: String,
+        expected: String?,
+    ) = runBlocking {
         val url = "https://hanime1.me/watch?v=42"
         val ctx = OfflineContentLoaderContext(mapOf(url to "exhentai/search.html"), transformBody = { _, _ ->
             """<html><head><meta name="description" content="$description"></head>
@@ -158,11 +161,10 @@ class ExHentaiSearchTest {
         val parser = ContentParserSource.HANIME1.newParser(ctx)
         val details = parser.getDetails(metadataContent(ContentParserSource.HANIME1, url))
         val payload = metadata(parser, details)
-        if (expected == null) {
-            assertTrue(!payload.has("producers"))
-        } else {
-            assertEquals(listOf(expected), payload.getJSONArray("producers").toList())
-        }
+        assertTrue(!payload.has("producers"))
+        assertTrue(!payload.has("series"))
+        assertTrue(!details.description.isNullOrBlank())
+        expected?.let { assertTrue(details.description!!.contains(it)) }
         assertEquals(setOf("Creator"), details.authors)
         assertEquals(listOf(url), ctx.requests)
     }

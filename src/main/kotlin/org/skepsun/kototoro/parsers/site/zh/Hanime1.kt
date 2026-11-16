@@ -654,11 +654,6 @@ internal class Hanime1(
         val attributes = doc.select(".single-video-tag").filterNot { it.hasAttr("data-toggle") }.map {
             it.text().removePrefix("# ").replace(Regex("""\s*\(\d+\)\s*$"""), "").trim()
         }
-        val brand = metaDesc?.replace(Regex("""(?i)<br\s*/?>"""), "\n")?.let { description ->
-            Regex("""(?im)^\s*Brand(?:\s*/\s*ブランド)?\s*[:：][ \t]*([^\r\n<]+)""")
-                .find(description)?.groupValues?.get(1)?.trim()
-                ?.takeIf(String::isNotEmpty)
-        }
         return manga.copy(
             title = doc.selectFirst("#shareBtn-title")?.text()?.trim()?.takeIf(String::isNotEmpty) ?: manga.title,
             authors = credit?.let(::setOf) ?: manga.authors,
@@ -682,7 +677,6 @@ internal class Hanime1(
             }
             org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.attachFields(
                 details,
-                producers = brand?.let(::listOf),
                 types = type?.let(::listOf),
                 subtitleLanguages = listOf("中文").takeIf { attributes.contains("中文字幕") },
                 audioLanguages = listOf("中文").takeIf { attributes.contains("中文配音") },

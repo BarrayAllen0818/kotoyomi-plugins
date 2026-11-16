@@ -233,6 +233,8 @@ internal class Rule34Video(context: ContentLoaderContext) :
                     group.select("a[href]").map { it.text().trim() }.filter(String::isNotEmpty)
                 }.takeIf { characterGroups.isNotEmpty() },
                 durationSeconds = duration ?: Long.MIN_VALUE,
+                // The site's explicit subtitle tag describes text language, not the audio track.
+                subtitleLanguages = listOf("英语").takeIf { tags.any { it.key == "tags:english-subtitles" } },
             )
         }
     }
