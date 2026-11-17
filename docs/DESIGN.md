@@ -48,6 +48,7 @@ Android 详情目标以 [PRD 展示要求](PRD.md#详情页作品信息展示)�
 - 分页状态的四项初始行为检查先在空实现上失败，随后通过。当前适用插件离线证据 162 项分轮取得，最后稳定身份调整后重跑分页、JM 和 NH 共 101 项通过，其余未受影响回归 61 项复用此前同输入结果。日志为 `build/combined-search-red.log`、`build/combined-search-plugin-recheck.log` 和 `build/combined-search-plugin-identity-check.log`。
 - 实际构建插件的 JVM 正式入口匿名线上核对 NH 25 部、JM 20 部的所需标签及排除条件，均通过；日志为 `build/combined-search-live.log`。最终 D8 9.3.16 打包成功，日志无警告，产物仅含 `classes.dex`，SHA-256 为 `bfe1f2e1d7ed44935fa2c7e59bd7b2046dd9f4dad5e1b4824a64f161c2394332`。
 - 宿主 15 项定向检查通过，包含从本轮插件 JAR 取得正式解析器后使用宿主模型、可选查询桥接及宿主版本判断；Debug APK 构建成功。宿主日志及安装、验收状态统一见上述宿主需求条目。本轮源码、发布与用户验收分别记录，不沿用上个字段修改任务的验收结论。
+- 源码提交 `a2874bf2` 已推送 `origin/master`；插件 1.0.149 发布提交为 `fff698c7481f6b1c846fd3db6999c1986dfdf586`，沿用 `repo` 历史。首次推送 TLS 握手失败，核对远端仍在原父提交后推送同一候选成功，未重建或递增第二个版本；原仓库 URL 的索引及插件 SHA-256 已核对，`http_verified=true`。证据为 `build/combined-search-publish.log`、`build/combined-search-publish-result.json`，发布工作树保留在 `build/plugin-releases/candidate-05_tfih8`。
 
 ### 2026-11-15 插件字段调整
 
