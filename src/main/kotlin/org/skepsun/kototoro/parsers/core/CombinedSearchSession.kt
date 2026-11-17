@@ -78,7 +78,7 @@ internal data class CombinedSearchPage<T>(val items: List<T>, val hasMore: Boole
 /** Primitive JSON boundary avoids adding host-only interface classes to a plugin for older apps. */
 internal class WebsiteCombinedSearch(private val parser: ContentParser) {
     private val isNh = parser is NhentaiParser
-    private val fields = if (isNh) setOf("title", "author", "tag", "parody", "character", "group", "type",
+    private val fields = if (isNh) setOf("title", "author", "tag", "number", "parody", "character", "group", "type",
         "language", "pages", "translated", "full_color", "uncensored")
         else setOf("title", "author", "tag", "number", "parody", "character", "type", "pages",
             "translated", "full_color", "uncensored")

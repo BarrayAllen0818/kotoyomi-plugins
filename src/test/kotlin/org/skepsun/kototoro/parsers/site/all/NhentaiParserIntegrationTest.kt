@@ -33,6 +33,22 @@ import org.skepsun.kototoro.parsers.util.LinkResolver
 @EnabledIfEnvironmentVariable(named = "NHENTAI_INTEGRATION_TEST", matches = "1")
 class NhentaiParserIntegrationTest {
     @Test
+    fun `numeric factory search returns the requested live gallery and stops after one result`() = runBlocking {
+        val context = NhIntegrationContext()
+        val parser = ContentParserSource.NHENTAI.newParser(context).also { context.parser = it }
+        val filter = ContentListFilter(query = "385440")
+        val item = parser.getList(0, SortOrder.NEWEST, filter).single()
+        assertTrue(item.url == "385440" && item.publicUrl.endsWith("/g/385440"))
+        assertTrue(item.title.isNotBlank())
+        assertTrue(parser.getList(1, SortOrder.NEWEST, filter).isEmpty())
+        assertTrue(context.requests.count { it.path == "/api/v2/galleries/385440" } == 1)
+        assertTrue(context.requests.none { it.path == "/api/v2/search" })
+        assertTrue(org.json.JSONObject(org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.get(item)!!)
+            .getInt("total_pages") > 0)
+        checkImage(context, requireNotNull(item.coverUrl), mapOf("Referer" to "https://nhentai.net/"))
+        println("NH_NUMBER_LIVE id=385440 detail_requests=1 keyword_requests=0 next_page=empty cover=verified")
+    }
+    @Test
     fun `anonymous factory search waits for quota and related works use a separate endpoint`() = runBlocking {
         val context = NhIntegrationContext()
         val parser = ContentParserSource.NHENTAI.newParser(context).also { context.parser = it }

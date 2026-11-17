@@ -942,6 +942,9 @@ internal class NhentaiParser(context: ContentLoaderContext) :
     override suspend fun getListPage(page: Int, order: SortOrder, filter: ContentListFilter): List<Content> {
         val operation = requestContext()
         val query = filter.query.orEmpty()
+        numericGalleryId(query)?.let { id ->
+            return if (page == searchPaginator.firstPage) listOf(searchGallery(id, operation)) else emptyList()
+        }
         val langTag = filter.tags.firstOrNull { it.key.startsWith("language:") }
         val tagFilter = filter.tags.firstOrNull { it.key.startsWith("tag:") }
         val sortParam = when (order) {
@@ -977,11 +980,19 @@ internal class NhentaiParser(context: ContentLoaderContext) :
         expression: JSONObject,
     ): org.skepsun.kototoro.parsers.core.CombinedSearchPage<Content> {
         val operation = requestContext()
+        val terms = org.skepsun.kototoro.parsers.core.WebsiteCombinedSearch.necessaryTerms(expression)
+        val number = terms.firstOrNull { it.first == "number" }?.second
+        val id = numericGalleryId(keyword) ?: number?.takeIf { keyword.isBlank() }
+            ?.let { numericGalleryId(it) ?: invalid(operation, it, "number") }
+        if (id != null) {
+            val items = if (page == searchPaginator.firstPage) listOf(searchGallery(id, operation)) else emptyList()
+            return org.skepsun.kototoro.parsers.core.CombinedSearchPage(items, false,
+                items.associate { it.url to it.url.toLong() })
+        }
         val namespaces = mapOf("tag" to "tag", "author" to "artist", "parody" to "parody",
             "character" to "character", "group" to "group", "language" to "language", "type" to "category")
         val parts = mutableListOf<String>()
         if (keyword.isNotBlank()) parts.add(keyword)
-        val terms = org.skepsun.kototoro.parsers.core.WebsiteCombinedSearch.necessaryTerms(expression)
         for ((field, raw) in terms) {
             val namespace = namespaces[field] ?: continue
             if (!org.skepsun.kototoro.parsers.core.WebsiteCombinedSearch.safe(raw)) continue
@@ -1239,6 +1250,25 @@ internal class NhentaiParser(context: ContentLoaderContext) :
         return raw.removePrefix("nhentai").removePrefix("nh")
     }
 
+    private fun numericGalleryId(query: String): String? {
+        val value = query.trim()
+        if (value.isEmpty() || !value.all(Char::isDigit)) return null
+        return value.map { it.digitToInt().digitToChar() }.joinToString("").trimStart('0').ifEmpty { "0" }
+    }
+
+    private suspend fun searchGallery(id: String, operation: RequestContext): Content {
+        val seed = Content(
+            id = generateUid(id), title = "", altTitles = emptySet(), url = id,
+            publicUrl = "https://${operation.domain}/g/$id", rating = org.skepsun.kototoro.parsers.model.RATING_UNKNOWN,
+            contentRating = ContentRating.ADULT, coverUrl = null, tags = emptySet(),
+            state = null, authors = emptySet(), source = source,
+        )
+        val json = fetchGallery(id, operation)
+        val details = parseGalleryDetails(seed, json, operation)
+        if (details.title.isBlank()) invalid(operation, id, "title")
+        return details
+    }
+
     private data class RequestContext(val domain: String, val headers: Headers)
 
     private val cdnCache = NhentaiCdnCache()
@@ -1314,7 +1344,11 @@ internal class NhentaiParser(context: ContentLoaderContext) :
         val operation = requestContext()
         val galleryId = normalizeId(manga.url)
         val json = fetchGallery(galleryId, operation)
+        return parseGalleryDetails(manga, json, operation)
+    }
 
+    private suspend fun parseGalleryDetails(manga: Content, json: JSONObject, operation: RequestContext): Content {
+        val galleryId = normalizeId(manga.url)
         val title = json.optJSONObject("title")?.optString("english")
             ?.ifEmpty { json.optJSONObject("title")?.optString("japanese") }
             ?.ifEmpty { manga.title }

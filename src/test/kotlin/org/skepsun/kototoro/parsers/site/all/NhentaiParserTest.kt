@@ -31,6 +31,62 @@ import org.skepsun.kototoro.parsers.util.generateUid
 
 class NhentaiParserTest {
     @Test
+    fun `numeric factory search resolves the gallery without keyword search or further pages`() = runBlocking {
+        for (query in listOf("42", " 42 ", "00042", "４２", "٤٢")) {
+            val ctx = NhOfflineContext()
+            val parser = ContentParserSource.NHENTAI.newParser(ctx)
+            val filter = ContentListFilter(query = query)
+            val item = parser.getList(0, SortOrder.NEWEST, filter).single()
+            assertEquals("42", item.url)
+            assertEquals("https://nhentai.net/g/42", item.publicUrl)
+            assertEquals("Fixture title", item.title)
+            assertEquals(setOf("Fixture artist"), item.authors)
+            assertEquals(2, JSONObject(WebsiteWorkMetadata.get(item)!!).getInt("total_pages"))
+            assertEquals(1, ctx.requests.count { it.url.encodedPath == "/api/v2/galleries/42" })
+            val requestCount = ctx.requests.size
+            assertTrue(parser.getList(1, SortOrder.NEWEST, filter).isEmpty())
+            assertEquals(requestCount, ctx.requests.size)
+            assertTrue(ctx.requests.none { it.url.encodedPath == "/api/v2/search" })
+        }
+    }
+
+    @Test
+    fun `numeric search failures never fall back to keyword search or return a guessed work`() = runBlocking {
+        for (code in listOf(404, 429, 500)) {
+            val ctx = NhOfflineContext().apply { status = code }
+            val parser = ContentParserSource.NHENTAI.newParser(ctx)
+            assertThrows(IOException::class.java) { runBlocking {
+                parser.getList(0, SortOrder.NEWEST, ContentListFilter(query = "42"))
+            } }
+            assertEquals(listOf("/api/v2/galleries/42"), ctx.requests.map { it.url.encodedPath })
+        }
+        val ctx = NhOfflineContext().apply { gallery = JSONObject(gallery).put("id", 43).toString() }
+        val parser = ContentParserSource.NHENTAI.newParser(ctx)
+        assertThrows(ParseException::class.java) { runBlocking {
+            parser.getList(0, SortOrder.NEWEST, ContentListFilter(query = "42"))
+        } }
+    }
+
+    @Test
+    fun `NH number conditions use one complete gallery and retain remaining condition checks`() = runBlocking {
+        val ctx = NhOfflineContext()
+        val parser = ContentParserSource.NHENTAI.newParser(ctx) as org.skepsun.kototoro.parsers.core.ContentParserWrapper
+        val condition = """{"type":"term","field":"number","value":"42"}"""
+        assertNull(parser.getCombinedSearchProblemJson("", condition))
+        val rows = parser.getCombinedSearchPageJson(0, "NEWEST", "", condition) { it.authors.contains("Fixture artist") }
+        assertEquals(listOf("42"), rows.map { it.url })
+        assertTrue(parser.getCombinedSearchPageJson(1, "NEWEST", "", condition) { true }.isEmpty())
+        assertEquals(1, ctx.requests.count { it.url.encodedPath == "/api/v2/galleries/42" })
+        assertTrue(ctx.requests.none { it.url.encodedPath == "/api/v2/search" })
+        assertTrue(parser.getCombinedSearchPageJson(0, "NEWEST", "42",
+            """{"type":"term","field":"author","value":"other"}""") { false }.isEmpty())
+        ctx.requests.clear()
+        ctx.search = """{"result":[{"id":42,"english_title":"Fixture","thumbnail":"https://thumb.test/42.jpg","tag_ids":[]}],"num_pages":1}"""
+        parser.getCombinedSearchPageJson(0, "NEWEST", "Fixture", condition) { true }
+        assertEquals("Fixture", ctx.requests.first { it.url.encodedPath == "/api/v2/search" }.url.queryParameter("query"))
+        assertTrue(ctx.requests.none { it.url.encodedPath == "/api/v2/galleries/42" })
+    }
+    @Test
     fun `429 headers pause a new factory instance and cancellation sends no request`() = runBlocking {
         val ctx = NhOfflineContext().apply {
             status = 429
