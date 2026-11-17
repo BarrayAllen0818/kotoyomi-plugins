@@ -33,7 +33,6 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONException
 import org.skepsun.kototoro.parsers.exception.ParseException
 import org.skepsun.kototoro.parsers.util.src
-import org.skepsun.kototoro.parsers.network.UserAgents
 import org.skepsun.kototoro.parsers.util.generateUid
 import org.skepsun.kototoro.parsers.util.parseHtml
 import org.skepsun.kototoro.parsers.util.parseJson
@@ -847,14 +846,14 @@ internal class NhentaiParser(context: ContentLoaderContext) :
         )
 
     override fun getRequestHeaders(): Headers = Headers.Builder()
-        .add("User-Agent", UserAgents.CHROME_DESKTOP)
+        .add("User-Agent", context.getDefaultUserAgent())
         .build()
 
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
         val prepared = request.newBuilder()
             .header("Referer", request.header("Referer") ?: "https://$domain/")
-            .header("User-Agent", UserAgents.CHROME_DESKTOP)
+            .header("User-Agent", context.getDefaultUserAgent())
             .build()
         val origin = "https://$domain/".toHttpUrlOrNull()
         if (origin == null || request.url.scheme != origin.scheme || request.url.host != origin.host ||

@@ -31,6 +31,29 @@ import org.skepsun.kototoro.parsers.util.generateUid
 
 class NhentaiParserTest {
     @Test
+    fun `login headers and authenticated refresh requests use the host browser identity`() = runBlocking {
+        val ctx = NhAuthContext()
+        val parser = NhentaiParser(ctx).also { ctx.parser = it }
+        val browserUserAgent = ctx.getDefaultUserAgent()
+        assertEquals(browserUserAgent, parser.getRequestHeaders()["User-Agent"])
+        ctx.setAccess("expired")
+        ctx.setRefresh()
+        ctx.respond = { request -> when {
+            request.url.encodedPath == "/auth/refresh" -> {
+                ctx.setAccess("replacement"); 200 to "{}"
+            }
+            request.header("Authorization") == "User expired" -> 401 to "{}"
+            else -> 200 to "{\"username\":\"Fixture User\"}"
+        } }
+
+        assertEquals("Fixture User", requireNotNull(parser.authorizationProvider).getUsername())
+        assertEquals(listOf("/api/v2/user", "/auth/refresh", "/api/v2/user"),
+            ctx.requests.map { it.url.encodedPath })
+        assertTrue(ctx.requests.all { it.header("User-Agent") == browserUserAgent })
+        assertEquals("User replacement", ctx.requests.last().header("Authorization"))
+    }
+
+    @Test
     fun `web login exposes verified account and anonymous browsing remains available`() = runBlocking {
         val ctx = NhAuthContext()
         ctx.parser = NhentaiParser(ctx)
