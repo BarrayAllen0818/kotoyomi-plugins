@@ -20,16 +20,47 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable
 import org.skepsun.kototoro.parsers.ContentLoaderContext
 import org.skepsun.kototoro.parsers.ContentParser
 import org.skepsun.kototoro.parsers.SourceConfigMock
+import org.skepsun.kototoro.parsers.newParser
 import org.skepsun.kototoro.parsers.bitmap.Bitmap
 import org.skepsun.kototoro.parsers.config.ContentSourceConfig
 import org.skepsun.kototoro.parsers.model.ContentListFilter
 import org.skepsun.kototoro.parsers.model.ContentSource
+import org.skepsun.kototoro.parsers.model.ContentParserSource
 import org.skepsun.kototoro.parsers.model.SortOrder
 import org.skepsun.kototoro.parsers.util.LinkResolver
 
 /** 显式匿名线上验证；验证码或网络失败是受阻，不能作为图片验证通过。 */
 @EnabledIfEnvironmentVariable(named = "NHENTAI_INTEGRATION_TEST", matches = "1")
 class NhentaiParserIntegrationTest {
+    @Test
+    fun `anonymous factory search waits for quota and related works use a separate endpoint`() = runBlocking {
+        val context = NhIntegrationContext()
+        val parser = ContentParserSource.NHENTAI.newParser(context).also { context.parser = it }
+        val filter = ContentListFilter(query = "language:chinese")
+        var first: org.skepsun.kototoro.parsers.model.Content? = null
+        val started = System.nanoTime()
+        var offset = 0
+        repeat(11) { index ->
+            val items = parser.getList(offset, SortOrder.NEWEST, filter)
+            assertTrue(items.isNotEmpty(), "NH page ${index + 1} is empty")
+            if (first == null) first = items.first()
+            offset += items.size
+            println("NH_RATE_LIVE search_page=${index + 1} items=${items.size} elapsed_ms=${(System.nanoTime() - started) / 1_000_000}")
+        }
+        val search = context.requests.filter { it.path == "/api/v2/search" }
+        assertTrue(search.size == 11 && search.all { it.status == 200 })
+        assertTrue(search.last().startedAt - search.first().startedAt >= TimeUnit.SECONDS.toNanos(60),
+            "The eleventh anonymous search was dispatched before the first quota window ended")
+        val related = parser.getRelatedContent(requireNotNull(first))
+        assertTrue(related.isNotEmpty(), "NH related endpoint returned no works for the live sample")
+        assertTrue(related.none { it.id == first!!.id })
+        assertTrue(context.requests.count { it.path.endsWith("/related") } == 1)
+        assertTrue(context.requests.count { it.path == "/api/v2/search" } == 11,
+            "Loading related works issued additional searches")
+        checkImage(context, requireNotNull(related.first().coverUrl), mapOf("Referer" to "https://nhentai.net/"))
+        println("NH_RATE_LIVE related=${related.size} search_requests=11 related_requests=1")
+    }
+
     @Test
     fun `anonymous live list supplies accessible covers`() = runBlocking {
         val context = NhIntegrationContext()
@@ -103,7 +134,9 @@ class NhentaiParserIntegrationTest {
 /** 仅接受代理环境设置，不加载任何账户、Cookie 文件或 Token。 */
 private class NhIntegrationContext : ContentLoaderContext() {
     private val config = SourceConfigMock()
-    var parser: NhentaiParser? = null
+    var parser: ContentParser? = null
+    data class RequestTrace(val path: String, val startedAt: Long, val status: Int)
+    val requests = java.util.Collections.synchronizedList(mutableListOf<RequestTrace>())
     override val cookieJar: CookieJar = CookieJar.NO_COOKIES
     override val httpClient: OkHttpClient = OkHttpClient.Builder()
         .cookieJar(cookieJar)
@@ -112,6 +145,13 @@ private class NhIntegrationContext : ContentLoaderContext() {
         .readTimeout(30, TimeUnit.SECONDS)
         .callTimeout(45, TimeUnit.SECONDS)
         .addInterceptor { chain -> parser?.intercept(chain) ?: chain.proceed(chain.request()) }
+        .addInterceptor { chain ->
+            val start = System.nanoTime()
+            chain.proceed(chain.request()).also {
+                requests.add(RequestTrace(chain.request().url.encodedPath, start, it.code))
+                println("NH_RATE_HTTP path=${chain.request().url.encodedPath} status=${it.code} retry_after=${it.header("Retry-After").orEmpty()}")
+            }
+        }
         .apply {
             val raw = listOf("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy")
                 .firstNotNullOfOrNull { System.getenv(it)?.takeIf(String::isNotBlank) }
@@ -122,7 +162,8 @@ private class NhIntegrationContext : ContentLoaderContext() {
             }
         }.build()
     override fun getConfig(source: ContentSource): ContentSourceConfig = config
-    override fun getDefaultUserAgent(): String = "NH anonymous integration"
+    override fun getDefaultUserAgent(): String =
+        "Kotoyomi/2.4.5 (private integration; https://github.com/BarrayAllen0818/kotoyomi-plugins)"
     override fun newParserInstance(source: ContentSource): ContentParser = error("Unused")
     override fun newLinkResolver(link: HttpUrl): LinkResolver = error("Unused")
     @Deprecated("Provide a base url")

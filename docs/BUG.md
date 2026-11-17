@@ -1,5 +1,19 @@
 # 缺陷与验证记录
 
+## NH 请求限流
+
+### BUG-005 相关作品逐词搜索及多个入口未共享网站请求额度
+
+- 状态：待验收。2026-11-17 用户确认实施，NH 专用相关作品与接口额度控制已实现；手机体验尚待完成。
+- 原实现与原因：搜索、翻页与详情页相关作品共用 `/api/v2/search`。NH 沿用通用相关作品算法，把标题和别名按空白拆词，对每个不同词并发搜索；本轮电脑网页样本的标题有 45 个不同词。原实现没有 NH 共享请求额度或 429 暂停，登录只能增加额度。
+- 网站依据：实时读取 [NH 官方接口定义](https://nhentai.net/api/v2/openapi.json)，搜索匿名/登录分别为 10/20 次每分钟，详情为 20/45 次每分钟，相关作品为 12/30 次每分钟，批量标签为 15 次每分钟，均按出口 IP；账号信息为每账号 45 次每分钟。电脑匿名搜索实际返回 429、`x-ratelimit-limit: 10`、剩余 0 及 `Retry-After: 60`。登录请求的完整额度对照因浏览器控制超时未完成，不冒充实测。
+- 已确认处理：仅修改 NH 插件，相关作品使用 `/api/v2/galleries/{gallery_id}/related`；多个 NH 实例在同一宿主网络客户端及网站域名下共用各接口的额度和暂停时间。请求额度用尽后等待，等待可取消；网站 429 保留错误和等待时间，不循环重试。保留搜索条件、分页和账号认证，其他网站与共享插件接口不改。
+- 验证范围：离线覆盖并发与跨实例共享、匿名/登录额度、接口及域名隔离、取消、429 等待和恢复，以及正式插件工厂调用相关作品。电脑运行真实插件查询与相关作品，区分自动检查和手机实际验收；日志、产物与脱敏取样放在已忽略的 `build/`。
+- 实现：NH 相关作品仅查询一次专用接口，复用列表解析、排除当前作品并去重，不再拆词搜索。请求在发起网络连接前按接口等待，避免占用网络请求线程；取消等待不发送请求，已发送后取消仍保守计入额度。额度从响应到达时计时，匿名/登录切换保留已有请求记录。429 不计入成功额度，优先使用秒数或 HTTP 日期格式的 `Retry-After`，缺失或无效时暂停一分钟；暂停只作用于对应接口及网站地址。
+- 离线验证：`gradlew.bat test --tests org.skepsun.kototoro.parsers.site.all.NhentaiParserTest --tests org.skepsun.kototoro.parsers.site.all.NhentaiRateLimiterTest --tests org.skepsun.kototoro.parsers.site.all.NhentaiCdnCacheTest --tests org.skepsun.kototoro.parsers.site.zh.JmComicTest --tests org.skepsun.kototoro.parsers.core.CombinedSearchSessionTest jar pluginDexClasspath --init-script .github/scripts/plugin-classpath.gradle --no-daemon --console=plain` 成功，133 项通过，无失败、错误、跳过。相关作品两项新增检查在旧代码中实测失败；新增额度、并发、取消及暂停检查均实际执行。证据为 `build/nh-rate-related-red.log`、`build/nh-rate-final-checks.log`、`build/nh-rate-offline-results.json`。
+- 打包与复查：JVM JAR 和 D8 9.3.16 打包成功，DEX JAR 仅含有效 `classes.dex`，SHA-256 `3683191aadfd330183fa3aca238e34d741c58398a5667dd4b8f0b26bf18259f5`。差异检查及账号续期、请求取消、列表解析和正式插件工厂调用路径复查通过；相关源码及产物哈希记录在 `build/nh-rate-verification.json`，打包日志为 `build/nh-rate-d8.log`。宿主产品代码与共享接口未改，无需重装主包。
+- 电脑线上验证：通过 `NHENTAI_INTEGRATION_TEST=1` 显式运行，六项用例全部取得成功结果。正式工厂匿名搜索连续 11 页，前十页快速取得结果，第十一页等待首个一分钟窗口结束后发送，搜索全部 200；相关作品一次请求取得五部，没有额外搜索，首部封面可读取。原有首页、关键词两页及月热度、人物标签两页与排序、两部作品封面和首尾图片均通过。中间两项检查遇 TLS 握手中断，未计为产品修复成功，保留失败 XML 后原样定向复核通过；未改证书校验或放宽断言。证据为 `build/nh-rate-live-regression-results.xml`、`build/nh-rate-live-recheck-results.xml` 和对应日志。真实登录账号的连续额度仍由离线身份切换用例覆盖，手机原条件体验待验收。
+
 ## NH 网页登录
 
 ### BUG-004 登录页浏览器信息与手机网页组件不一致

@@ -25,10 +25,12 @@ import org.skepsun.kototoro.parsers.model.ContentTag
 import org.skepsun.kototoro.parsers.model.ContentTagGroup
 import org.skepsun.kototoro.parsers.model.SortOrder
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONException
 import org.skepsun.kototoro.parsers.exception.ParseException
@@ -39,6 +41,11 @@ import org.skepsun.kototoro.parsers.util.parseJson
 import org.skepsun.kototoro.parsers.util.parseJsonArray
 import org.skepsun.kototoro.parsers.util.urlEncoded
 import org.json.JSONObject
+import org.jsoup.HttpStatusException
+import org.skepsun.kototoro.parsers.exception.TooManyRequestExceptions
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
+import java.util.ArrayDeque
 import org.skepsun.kototoro.parsers.model.ContentType
 import java.util.EnumSet
 
@@ -61,7 +68,7 @@ internal class NhentaiParser(context: ContentLoaderContext) :
         if (!hasWebSession()) throw AuthRequiredException(source)
         val operation = requestContext()
         val url = "https://${operation.domain}/api/v2/user"
-        val user = webClient.httpGet(url, operation.headers).use { it.parseJson() }
+        val user = httpGet(url, operation.headers).use { it.parseJson() }
         currentCoroutineContext().ensureActive()
         return user.optString("username").takeIf { it.isNotBlank() }
             ?: throw ParseException("NH account: missing username", url)
@@ -849,8 +856,24 @@ internal class NhentaiParser(context: ContentLoaderContext) :
         .add("User-Agent", context.getDefaultUserAgent())
         .build()
 
+    private val requestLimiter: NhentaiRateLimiter
+        get() = NhentaiRateLimiter.forClient(context.httpClient)
+
+    private suspend fun httpGet(url: String, headers: Headers): Response {
+        val target = url.toHttpUrl()
+        return requestLimiter.execute(target, {
+            val refreshUrl = target.resolve("/auth/refresh")!!
+            context.cookieJar.loadForRequest(refreshUrl).any {
+                it.name in setOf("access_token", "refresh_token") && it.value.isNotBlank()
+            }
+        }) { webClient.httpGet(target, headers) }
+    }
+
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
+        fun proceed(next: okhttp3.Request): Response = chain.proceed(next).also { response ->
+            if (response.code == 429) requestLimiter.observeLimit(request.url, response.header("Retry-After"))
+        }
         val prepared = request.newBuilder()
             .header("Referer", request.header("Referer") ?: "https://$domain/")
             .header("User-Agent", context.getDefaultUserAgent())
@@ -858,7 +881,7 @@ internal class NhentaiParser(context: ContentLoaderContext) :
         val origin = "https://$domain/".toHttpUrlOrNull()
         if (origin == null || request.url.scheme != origin.scheme || request.url.host != origin.host ||
             request.url.port != origin.port || !request.url.encodedPath.startsWith("/api/v2/")) {
-            return chain.proceed(prepared)
+            return proceed(prepared)
         }
         val state = synchronized(authStates) {
             authStates.getOrPut(context.cookieJar) { HashMap() }.getOrPut(origin.toString()) { WebAuthState() }
@@ -872,11 +895,11 @@ internal class NhentaiParser(context: ContentLoaderContext) :
         }.build()
         val token = webAccessToken(origin)
         val identity = sessionIdentity()
-        if (identity.isEmpty()) return chain.proceed(prepared)
+        if (identity.isEmpty()) return proceed(prepared)
         synchronized(state) {
             if (state.rejectedSession == identity) throw AuthRequiredException(source)
         }
-        val response = if (token != null) chain.proceed(authenticated(token)) else null
+        val response = if (token != null) proceed(authenticated(token)) else null
         if (response != null && response.code != 401) return response
         response?.close()
         val renewed = synchronized(state) {
@@ -886,7 +909,7 @@ internal class NhentaiParser(context: ContentLoaderContext) :
             val refreshIdentity = sessionIdentity()
             val refresh = prepared.newBuilder().url(refreshUrl).removeHeader("Authorization")
                 .post(ByteArray(0).toRequestBody()).build()
-            val result = chain.proceed(refresh)
+            val result = proceed(refresh)
             if (result.code == 401 || result.code == 403) {
                 result.close()
                 val browserToken = webAccessToken(origin)
@@ -902,7 +925,7 @@ internal class NhentaiParser(context: ContentLoaderContext) :
                 throw AuthRequiredException(source)
             }
         }
-        val retried = chain.proceed(authenticated(renewed))
+        val retried = proceed(authenticated(renewed))
         if (retried.code == 401) {
             retried.close()
             synchronized(state) {
@@ -941,7 +964,7 @@ internal class NhentaiParser(context: ContentLoaderContext) :
             sortParam != null -> "https://${operation.domain}/search/?q=%22%22&page=$page$searchSortParam"
             else -> "https://${operation.domain}/?page=$page"
         }
-        val doc = webClient.httpGet(url, operation.headers).parseHtml()
+        val doc = httpGet(url, operation.headers).parseHtml()
         return parseGalleryList(doc, operation.domain)
     }
 
@@ -1002,7 +1025,7 @@ internal class NhentaiParser(context: ContentLoaderContext) :
             throw ParseException("NH search: invalid $field", url, cause)
 
         // The search webpage converts API failures to empty results; consume the API response directly.
-        val json = webClient.httpGet(url, operation.headers).use { response ->
+        val json = httpGet(url, operation.headers).use { response ->
             currentCoroutineContext().ensureActive()
             try {
                 response.parseJson()
@@ -1013,6 +1036,33 @@ internal class NhentaiParser(context: ContentLoaderContext) :
         currentCoroutineContext().ensureActive()
         if (json.has("error") && !json.isNull("error")) invalidSearch("response error")
         val result = json.optJSONArray("result") ?: invalidSearch("result")
+        onPaging(if (json.has("num_pages")) page < json.getInt("num_pages") else result.length() > 0)
+        return parseApiList(result, operation, url, completeTags)
+    }
+
+    override suspend fun getRelatedContent(seed: Content): List<Content> {
+        val operation = requestContext()
+        val id = normalizeId(seed.url)
+        val url = "https://${operation.domain}/api/v2/galleries/$id/related"
+        val json = httpGet(url, operation.headers).use { response ->
+            try {
+                response.parseJson()
+            } catch (e: JSONException) {
+                throw ParseException("NH related: invalid response JSON", url, e)
+            }
+        }
+        currentCoroutineContext().ensureActive()
+        if (json.has("error") && !json.isNull("error")) throw ParseException("NH related: response error", url)
+        val result = json.optJSONArray("result") ?: throw ParseException("NH related: invalid result", url)
+        return parseApiList(result, operation, url, completeTags = false)
+            .filter { it.url != id }.distinctBy { it.id }
+    }
+
+    private suspend fun parseApiList(result: org.json.JSONArray, operation: RequestContext, url: String,
+        completeTags: Boolean,
+    ): List<Content> {
+        fun invalidSearch(field: String): Nothing =
+            throw ParseException("NH ${if (url.endsWith("/related")) "related" else "search"}: invalid $field", url)
         if (completeTags) {
             val ids = linkedSetOf<String>()
             for (i in 0 until result.length()) {
@@ -1024,7 +1074,7 @@ internal class NhentaiParser(context: ContentLoaderContext) :
                 }
             }
             for (chunk in ids.toList().chunked(100)) {
-                val tags = webClient.httpGet("https://${operation.domain}/api/v2/tags/ids?ids=${chunk.joinToString(",")}",
+                val tags = httpGet("https://${operation.domain}/api/v2/tags/ids?ids=${chunk.joinToString(",")}",
                     operation.headers).use { it.parseJsonArray() }
                 val loaded = HashMap<String, JSONObject>()
                 for (t in 0 until tags.length()) {
@@ -1037,7 +1087,6 @@ internal class NhentaiParser(context: ContentLoaderContext) :
                 synchronized(combinedTagNames) { combinedTagNames.putAll(loaded) }
             }
         }
-        onPaging(if (json.has("num_pages")) page < json.getInt("num_pages") else result.length() > 0)
         var thumbnailServer: HttpUrl? = null
         return (0 until result.length()).map { index ->
             currentCoroutineContext().ensureActive()
@@ -1109,7 +1158,7 @@ internal class NhentaiParser(context: ContentLoaderContext) :
 
         if (!id.matches(Regex("[1-9][0-9]*")) || id.toLongOrNull() == null) invalidTag("id")
         // Saved tag keys also include characters/artists; only the site knows their canonical route.
-        val tags = webClient.httpGet("$endpoint?ids=$id", operation.headers).use {
+        val tags = httpGet("$endpoint?ids=$id", operation.headers).use {
             currentCoroutineContext().ensureActive()
             try {
                 it.parseJsonArray()
@@ -1202,7 +1251,7 @@ internal class NhentaiParser(context: ContentLoaderContext) :
     }
 
     private suspend fun fetchGallery(id: String, operation: RequestContext): JSONObject {
-        val json = webClient.httpGet("https://${operation.domain}/api/v2/galleries/$id", operation.headers).use {
+        val json = httpGet("https://${operation.domain}/api/v2/galleries/$id", operation.headers).use {
             currentCoroutineContext().ensureActive()
             try {
                 it.parseJson()
@@ -1218,7 +1267,7 @@ internal class NhentaiParser(context: ContentLoaderContext) :
     private suspend fun cdn(operation: RequestContext): NhentaiCdnConfig =
         cdnCache.get(operation.domain, { domain }) {
             val url = "https://${operation.domain}/api/v2/cdn"
-            webClient.httpGet(url, operation.headers).use { response ->
+            httpGet(url, operation.headers).use { response ->
                 currentCoroutineContext().ensureActive()
                 val json = try {
                     response.parseJson()
@@ -1410,6 +1459,111 @@ internal class NhentaiParser(context: ContentLoaderContext) :
 }
 
 internal data class NhentaiCdnConfig(val images: HttpUrl, val thumbnails: HttpUrl)
+
+/** Per-client, per-origin NH quotas; waiting stays outside OkHttp and remains cancellable. */
+internal class NhentaiRateLimiter(
+    private val now: () -> Long = { System.nanoTime() / 1_000_000L },
+    private val wallTime: () -> Long = System::currentTimeMillis,
+) {
+    private enum class Endpoint(val anonymous: Int, val authenticated: Int) {
+        SEARCH(10, 20), DETAILS(20, 45), TAGS(15, 15), RELATED(12, 30), USER(45, 45),
+    }
+
+    private class Bucket {
+        val mutex = Mutex()
+        val sent = ArrayDeque<Long>()
+        var blockedUntil: Long? = null
+    }
+
+    private val buckets = HashMap<Pair<String, Endpoint>, Bucket>()
+
+    private fun endpoint(url: HttpUrl): Endpoint? = when {
+        url.encodedPath == "/api/v2/search" -> Endpoint.SEARCH
+        url.encodedPath == "/api/v2/tags/ids" -> Endpoint.TAGS
+        url.encodedPath == "/api/v2/user" -> Endpoint.USER
+        url.encodedPath.matches(Regex("/api/v2/galleries/[1-9][0-9]*/related")) -> Endpoint.RELATED
+        url.encodedPath.matches(Regex("/api/v2/galleries/[1-9][0-9]*")) -> Endpoint.DETAILS
+        else -> null
+    }
+
+    private fun bucket(url: HttpUrl, endpoint: Endpoint): Bucket = synchronized(buckets) {
+        buckets.getOrPut(url.resolve("/")!!.toString() to endpoint) { Bucket() }
+    }
+
+    fun observeLimit(url: HttpUrl, retryAfter: String?) {
+        val endpoint = endpoint(url) ?: return
+        val seconds = retryAfter?.trim()?.toLongOrNull()?.takeIf { it >= 0 }
+        val millis = seconds?.coerceAtMost(Long.MAX_VALUE / 1000)?.times(1000)
+            ?: retryAfter?.let {
+                runCatching {
+                    (ZonedDateTime.parse(it, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().toEpochMilli() - wallTime())
+                        .coerceAtLeast(0L)
+                }.getOrNull()
+            } ?: WINDOW_MILLIS
+        block(bucket(url, endpoint), millis)
+    }
+
+    private fun block(bucket: Bucket, millis: Long) = synchronized(bucket) {
+        val time = now()
+        val until = time + millis.coerceAtMost(Long.MAX_VALUE - time.coerceAtLeast(0L))
+        bucket.blockedUntil = maxOf(bucket.blockedUntil ?: until, until)
+    }
+
+    suspend fun execute(url: HttpUrl, authenticated: () -> Boolean, load: suspend () -> Response): Response {
+        val endpoint = endpoint(url) ?: return load()
+        val bucket = bucket(url, endpoint)
+        return bucket.mutex.withLock {
+            while (true) {
+                currentCoroutineContext().ensureActive()
+                val limit = if (authenticated()) endpoint.authenticated else endpoint.anonymous
+                val wait = synchronized(bucket) {
+                    val time = now()
+                    while (bucket.sent.isNotEmpty() && time - bucket.sent.first >= WINDOW_MILLIS) bucket.sent.removeFirst()
+                    if (bucket.blockedUntil?.let { it <= time } == true) bucket.blockedUntil = null
+                    val quotaWait = if (bucket.sent.size >= limit) WINDOW_MILLIS - (time - bucket.sent.first) else 0L
+                    maxOf(quotaWait, (bucket.blockedUntil?.minus(time) ?: 0L).coerceAtLeast(0L))
+                }
+                if (wait <= 0L) break
+                delay(wait)
+            }
+            currentCoroutineContext().ensureActive()
+            var rateLimited = false
+            try {
+                val response = load()
+                if (response.code == 429) {
+                    observeLimit(url, response.header("Retry-After"))
+                    response.close()
+                    throw TooManyRequestExceptions(url.toString(), synchronized(bucket) {
+                        (bucket.blockedUntil?.minus(now()) ?: WINDOW_MILLIS).coerceAtLeast(0L)
+                    })
+                }
+                response
+            } catch (e: Exception) {
+                if (e is TooManyRequestExceptions || e is HttpStatusException && e.statusCode == 429) {
+                    rateLimited = true
+                    // The interceptor records headers before either host or WebClient closes the response.
+                    val retry = synchronized(bucket) { bucket.blockedUntil?.minus(now()) }
+                        ?: (e as? TooManyRequestExceptions)?.getRetryDelay()?.takeIf { it >= 0L }
+                        ?: WINDOW_MILLIS
+                    block(bucket, retry.coerceAtLeast(0L))
+                    throw if (e is TooManyRequestExceptions) e else TooManyRequestExceptions(url.toString(), retry)
+                }
+                throw e
+            } finally {
+                // A canceled/failed dispatched request may have reached the server; count it conservatively.
+                if (!rateLimited) synchronized(bucket) { bucket.sent.addLast(now()) }
+            }
+        }
+    }
+
+    companion object {
+        private const val WINDOW_MILLIS = 60_000L
+        private val clients = java.util.WeakHashMap<okhttp3.OkHttpClient, NhentaiRateLimiter>()
+        fun forClient(client: okhttp3.OkHttpClient): NhentaiRateLimiter = synchronized(clients) {
+            clients.getOrPut(client) { NhentaiRateLimiter() }
+        }
+    }
+}
 
 /** NH 局部串行缓存；旧域操作可以完成，但不能发布到当前域缓存。 */
 internal class NhentaiCdnCache(private val nanoTime: () -> Long = System::nanoTime) {
