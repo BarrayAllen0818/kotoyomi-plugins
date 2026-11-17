@@ -521,11 +521,18 @@ internal class JmParser(
         val items = (0 until content.length()).map { index ->
             parseComic(content.getJSONObject(index)) ?: throw ParseException("JM 组合搜索作品字段无效", "$baseUrl$path")
         }
-        // The API's total can be capped at 10000 while later pages remain accessible.
+        // Past the last page this API repeats the last non-empty page. An uncapped total is
+        // authoritative; 10000 is a server cap and must not truncate a larger result stream.
+        val total = json.opt("total")?.toString()?.toLongOrNull()?.takeIf { it >= 0 }
+        val hasMore = items.isNotEmpty() && when {
+            total == null -> items.size >= pageSize
+            total >= 10000 -> true
+            else -> page.toLong() * pageSize < total
+        }
         val orderKeys = items.mapIndexedNotNull { index, item ->
             content.getJSONObject(index).opt("update_at")?.toString()?.toLongOrNull()?.let { item.url to it }
         }.toMap()
-        return org.skepsun.kototoro.parsers.core.CombinedSearchPage(items, items.isNotEmpty(), orderKeys)
+        return org.skepsun.kototoro.parsers.core.CombinedSearchPage(items, hasMore, orderKeys)
     }
 
     private suspend fun searchAlbum(inputId: String): Content {

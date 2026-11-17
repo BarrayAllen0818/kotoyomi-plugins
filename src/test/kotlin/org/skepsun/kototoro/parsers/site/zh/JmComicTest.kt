@@ -45,6 +45,20 @@ import org.skepsun.kototoro.parsers.util.LinkResolver
 
 class JmComicTest {
 
+    @ParameterizedTest
+    @ValueSource(ints = [1, 35, 80])
+    fun `combined terminal page uses total instead of requesting the repeated last page`(total: Int) = runTest {
+        val context = JmOfflineContext()
+        context.searchBody = { JSONObject().put("total", total).put("content", org.json.JSONArray(
+            (1..total).map { JSONObject().put("id", (1000 + it).toString()).put("name", "Fixture") })).toString() }
+        val parser = org.skepsun.kototoro.parsers.model.ContentParserSource.JMCOMIC.newParser(context)
+            as org.skepsun.kototoro.parsers.core.ContentParserWrapper
+        val expression = """{"type":"term","field":"tag","value":"大乳暈"}"""
+        val rows = parser.getCombinedSearchPageJson(0, "NEWEST", "", expression) { false }
+        assertTrue(rows.isEmpty())
+        assertEquals(1, context.businessRequests.count { it.url.encodedPath == "/search" })
+    }
+
     @Test
     fun `factory combined search uses tag mode required tags and exclusion and continues past empty filtered pages`() = runTest {
         val context = JmOfflineContext()
