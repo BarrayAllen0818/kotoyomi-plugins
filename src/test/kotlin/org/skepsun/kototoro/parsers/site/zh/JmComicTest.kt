@@ -46,6 +46,32 @@ import org.skepsun.kototoro.parsers.util.LinkResolver
 class JmComicTest {
 
     @Test
+    fun `factory combined search uses tag mode required tags and exclusion and continues past empty filtered pages`() = runTest {
+        val context = JmOfflineContext()
+        context.searchBody = { request ->
+            val page = request.url.queryParameter("page")!!.toInt()
+            JSONObject().put("content", org.json.JSONArray(if (page <= 2) listOf(
+                JSONObject().put("id", (40 + page).toString()).put("name", "Fixture"),
+            ) else emptyList<JSONObject>())).put("total", 10000).toString()
+        }
+        context.albumBody = JSONObject(context.albumBody).put("tags", org.json.JSONArray(listOf("全彩", "巨乳"))).toString()
+        val parser = org.skepsun.kototoro.parsers.model.ContentParserSource.JMCOMIC.newParser(context)
+            as org.skepsun.kototoro.parsers.core.ContentParserWrapper
+        val expression = """{"type":"all","children":[{"type":"term","field":"tag","value":"全彩"},{"type":"term","field":"tag","value":"巨乳"},{"type":"not","child":{"type":"term","field":"tag","value":"NTR"}}]}"""
+        assertNull(parser.getCombinedSearchProblemJson("", expression))
+        val rows = parser.getCombinedSearchPageJson(0, "NEWEST", "", expression) { it.url.contains("id=42") }
+        assertEquals(1, rows.size)
+        assertEquals(listOf("1", "2", "3"), context.businessRequests.filter { it.url.encodedPath == "/search" }
+            .map { it.url.queryParameter("page") })
+        context.businessRequests.filter { it.url.encodedPath == "/search" }.forEach {
+            assertEquals("3", it.url.queryParameter("main_tag"))
+            assertEquals("+全彩 +巨乳 -NTR", it.url.queryParameter("search_query"))
+        }
+        assertEquals(2, context.businessRequests.count { it.url.encodedPath == "/album" })
+        assertTrue(parser.getCombinedSearchPageJson(1, "NEWEST", "", expression) { true }.isEmpty())
+    }
+
+    @Test
     fun `factory list categories survive detail response without category fields`() = runTest {
         val context = JmOfflineContext()
         val parser = org.skepsun.kototoro.parsers.model.ContentParserSource.JMCOMIC.newParser(context)
@@ -701,6 +727,7 @@ private class JmOfflineContext(private val preferences: JmTestPreferences = JmTe
     val businessRequests: List<Request>
         get() = requests.filter { it.url.encodedPath in setOf("/album", "/search") }
     var albumBody: String = fixture("album.json")
+    var searchBody: (Request) -> String = { fixture("search.json") }
     var albumFailure: (() -> Nothing)? = null
     var albumStatus: Int = 200
 
@@ -719,7 +746,7 @@ private class JmOfflineContext(private val preferences: JmTestPreferences = JmTe
             val body = when (request.url.encodedPath) {
                 "/newsvr-2025.txt" -> encrypt("""{"Server":["api.jm.invalid"]}""", "diosfjckwpqpdfjkvnqQjsik")
                 "/setting" -> envelope(request, settingBody(request))
-                "/search" -> envelope(request, fixture("search.json"))
+                "/search" -> envelope(request, searchBody(request))
                 "/album" -> {
                     albumFailure?.invoke()
                     envelope(request, albumBody, albumStatus)

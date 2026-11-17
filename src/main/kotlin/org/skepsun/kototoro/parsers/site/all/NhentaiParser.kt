@@ -851,7 +851,58 @@ internal class NhentaiParser(context: ContentLoaderContext) :
         return parseGalleryList(doc, operation.domain)
     }
 
-    private suspend fun search(query: String, page: Int, sort: String, operation: RequestContext): List<Content> {
+    private val combinedTagNames = HashMap<String, JSONObject>()
+
+    internal suspend fun getCombinedCandidates(page: Int, order: SortOrder, keyword: String,
+        expression: JSONObject,
+    ): org.skepsun.kototoro.parsers.core.CombinedSearchPage<Content> {
+        val operation = requestContext()
+        val namespaces = mapOf("tag" to "tag", "author" to "artist", "parody" to "parody",
+            "character" to "character", "group" to "group", "language" to "language", "type" to "category")
+        val parts = mutableListOf<String>()
+        if (keyword.isNotBlank()) parts.add(keyword)
+        val terms = org.skepsun.kototoro.parsers.core.WebsiteCombinedSearch.necessaryTerms(expression)
+        for ((field, raw) in terms) {
+            val namespace = namespaces[field] ?: continue
+            if (!org.skepsun.kototoro.parsers.core.WebsiteCombinedSearch.safe(raw)) continue
+            // Keep original names; the app's Chinese language label maps to the site's canonical value.
+            val value = if (field == "language") when (raw) {
+                "中文", "简体中文", "繁体中文" -> "chinese"
+                "英语", "英文" -> "english"
+                "日语", "日文", "日本語" -> "japanese"
+                else -> raw
+            } else raw
+            parts.add("$namespace:\"$value\"")
+        }
+        fun exclusions(node: JSONObject) {
+            if (node.getString("type") == "all") {
+                val children = node.getJSONArray("children")
+                for (i in 0 until children.length()) exclusions(children.getJSONObject(i))
+            } else if (node.getString("type") == "not") {
+                val child = node.getJSONObject("child")
+                if (child.optString("type") == "term" && child.optString("field") == "tag" &&
+                    org.skepsun.kototoro.parsers.core.WebsiteCombinedSearch.safe(child.getString("value"))) {
+                    parts.add("-tag:\"${child.getString("value")}\"")
+                }
+            }
+        }
+        exclusions(expression)
+        val sort = when (order) {
+            SortOrder.POPULARITY_TODAY -> "popular-today"
+            SortOrder.POPULARITY_WEEK -> "popular-week"
+            SortOrder.POPULARITY_MONTH -> "popular-month"
+            SortOrder.POPULARITY -> "popular"
+            else -> "date"
+        }
+        var more = false
+        val items = search(parts.joinToString(" "), page, sort, operation, completeTags = true) { more = it }
+        return org.skepsun.kototoro.parsers.core.CombinedSearchPage(items, more,
+            items.associate { it.url to it.url.toLong() })
+    }
+
+    private suspend fun search(query: String, page: Int, sort: String, operation: RequestContext,
+        completeTags: Boolean = false, onPaging: (Boolean) -> Unit = {},
+    ): List<Content> {
         val url = "https://${operation.domain}/api/v2/search?query=${query.urlEncoded()}&sort=$sort&page=$page"
         fun invalidSearch(field: String, cause: Throwable? = null): Nothing =
             throw ParseException("NH search: invalid $field", url, cause)
@@ -868,6 +919,31 @@ internal class NhentaiParser(context: ContentLoaderContext) :
         currentCoroutineContext().ensureActive()
         if (json.has("error") && !json.isNull("error")) invalidSearch("response error")
         val result = json.optJSONArray("result") ?: invalidSearch("result")
+        if (completeTags) {
+            val ids = linkedSetOf<String>()
+            for (i in 0 until result.length()) {
+                val tags = result.getJSONObject(i).optJSONArray("tag_ids") ?: invalidSearch("tag_ids")
+                for (t in 0 until tags.length()) {
+                    val id = tags.get(t).toString()
+                    if (!id.matches(Regex("[1-9][0-9]*"))) invalidSearch("tag id")
+                    if (synchronized(combinedTagNames) { id !in combinedTagNames }) ids.add(id)
+                }
+            }
+            for (chunk in ids.toList().chunked(100)) {
+                val tags = webClient.httpGet("https://${operation.domain}/api/v2/tags/ids?ids=${chunk.joinToString(",")}",
+                    operation.headers).use { it.parseJsonArray() }
+                val loaded = HashMap<String, JSONObject>()
+                for (t in 0 until tags.length()) {
+                    val tag = tags.getJSONObject(t)
+                    val id = tag.get("id").toString()
+                    if (id !in chunk || tag.optString("name").isBlank() || tag.optString("type").isBlank()) invalidSearch("tag metadata")
+                    loaded[id] = tag
+                }
+                if (!loaded.keys.containsAll(chunk)) invalidSearch("missing tag metadata")
+                synchronized(combinedTagNames) { combinedTagNames.putAll(loaded) }
+            }
+        }
+        onPaging(if (json.has("num_pages")) page < json.getInt("num_pages") else result.length() > 0)
         var thumbnailServer: HttpUrl? = null
         return (0 until result.length()).map { index ->
             currentCoroutineContext().ensureActive()
@@ -898,7 +974,7 @@ internal class NhentaiParser(context: ContentLoaderContext) :
                         else -> "中文"
                     }
                 }.orEmpty()
-            Content(
+            val item = Content(
                 id = generateUid(id),
                 title = title,
                 altTitles = emptySet(),
@@ -913,6 +989,21 @@ internal class NhentaiParser(context: ContentLoaderContext) :
                 source = source,
                 description = language,
             )
+            if (!completeTags) item else {
+                val allTags = (0 until checkNotNull(tagIds).length()).map { t ->
+                    synchronized(combinedTagNames) { checkNotNull(combinedTagNames[tagIds.get(t).toString()]) }
+                }
+                fun names(type: String) = allTags.filter { it.getString("type") == type }.map { it.getString("name") }
+                val enriched = item.copy(
+                    altTitles = setOfNotNull((entry.opt("japanese_title") as? String)?.takeIf(String::isNotBlank)),
+                    authors = names("artist").toSet(),
+                    tags = allTags.map { tag -> ContentTag(tag.getString("name"), "tag:${tag.get("id")}", source) }.toSet(),
+                )
+                org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.attachFields(enriched,
+                    totalPages = entry.opt("num_pages")?.toString()?.toIntOrNull() ?: Int.MIN_VALUE,
+                    parodies = names("parody"), characters = names("character"), groups = names("group"),
+                    languages = names("language"), types = names("category"))
+            }
         }
     }
 

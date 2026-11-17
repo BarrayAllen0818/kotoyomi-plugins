@@ -20,6 +20,21 @@ internal class ContentParserWrapper(
 	internal val favoritesProvider: FavoritesProvider? = delegate as? FavoritesProvider
 	internal val favoritesSyncProvider: FavoritesSyncProvider? = delegate as? FavoritesSyncProvider
 
+	private val combinedSearch by lazy {
+		if (delegate is org.skepsun.kototoro.parsers.site.zh.JmParser ||
+			delegate is org.skepsun.kototoro.parsers.site.all.NhentaiParser) WebsiteCombinedSearch(delegate) else null
+	}
+
+	public fun getCombinedSearchCapabilitiesJson(): String? = combinedSearch?.capabilities()
+
+	public fun getCombinedSearchProblemJson(keyword: String, expression: String): String? =
+		combinedSearch?.problem(keyword, expression) ?: if (combinedSearch == null) "此来源尚未接入组合搜索" else null
+
+	public suspend fun getCombinedSearchPageJson(offset: Int, order: String, keyword: String,
+		expression: String, matches: (Content) -> Boolean,
+	): List<Content> = checkNotNull(combinedSearch) { "此来源尚未接入组合搜索" }
+		.read(offset, order, keyword, expression, matches)
+
 	override val authorizationProvider: ContentParserAuthProvider?
 		get() = delegate as? ContentParserAuthProvider
 

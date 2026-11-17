@@ -13,6 +13,7 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.json.JSONObject
+import org.json.JSONArray
 import okio.buffer
 import org.jsoup.Jsoup
 import org.junit.jupiter.api.Assertions.*
@@ -29,6 +30,65 @@ import org.skepsun.kototoro.parsers.util.LinkResolver
 import org.skepsun.kototoro.parsers.util.generateUid
 
 class NhentaiParserTest {
+    @Test
+    fun `alternative tag queries merge newest results without duplicates and reject incomparable sorting before requests`() = runBlocking {
+        val ctx = NhOfflineContext()
+        ctx.onRequest = { request ->
+            if (request.url.encodedPath == "/api/v2/search") {
+                val ids = if (request.url.queryParameter("query")!!.contains("Alpha")) listOf(9, 7) else listOf(9, 8)
+                ctx.search = JSONObject().put("num_pages", 1).put("result", JSONArray(ids.map { id ->
+                    JSONObject().put("id", id).put("english_title", "Fixture")
+                        .put("thumbnail", "https://thumb.test/$id.jpg").put("tag_ids", JSONArray())
+                })).toString()
+            }
+        }
+        val parser = org.skepsun.kototoro.parsers.model.ContentParserSource.NHENTAI.newParser(ctx)
+            as org.skepsun.kototoro.parsers.core.ContentParserWrapper
+        val expression = """{"type":"any","children":[{"type":"term","field":"tag","value":"Alpha"},{"type":"term","field":"tag","value":"Beta"}]}"""
+        assertThrows(IllegalArgumentException::class.java) { runBlocking {
+            parser.getCombinedSearchPageJson(0, "POPULARITY", "", expression) { true }
+        } }
+        assertTrue(ctx.requests.isEmpty())
+        assertEquals(listOf("9", "8", "7"), parser.getCombinedSearchPageJson(0, "NEWEST", "", expression) { true }.map { it.url })
+        assertEquals(setOf("tag:\"Alpha\"", "tag:\"Beta\""), ctx.requests.map { it.url.queryParameter("query") }.toSet())
+    }
+
+    @Test
+    fun `factory combined search retains complete list facts and skips filtered pages without gallery requests`() = runBlocking {
+        val ctx = NhOfflineContext()
+        ctx.tagMetadata = """[{"id":29963,"name":"chinese","type":"language"},{"id":2,"name":"full color","type":"tag"}]"""
+        ctx.onRequest = { request ->
+            if (request.url.encodedPath == "/api/v2/search") {
+                val page = request.url.queryParameter("page")!!.toInt()
+                ctx.search = """{"result":[{"id":${43 - page},"english_title":"Full color Fixture","japanese_title":"別名","thumbnail":"https://thumb.test/a.jpg","num_pages":42,"tag_ids":[29963,2]}],"num_pages":2}"""
+            }
+        }
+        val parser = org.skepsun.kototoro.parsers.model.ContentParserSource.NHENTAI.newParser(ctx)
+            as org.skepsun.kototoro.parsers.core.ContentParserWrapper
+        val expression = """{"type":"all","children":[{"type":"term","field":"language","value":"chinese"},{"type":"term","field":"tag","value":"full color"},{"type":"not","child":{"type":"term","field":"tag","value":"netorare"}}]}"""
+        val result = parser.getCombinedSearchPageJson(0, "NEWEST", "", expression) { it.url == "41" }
+        assertEquals(listOf("41"), result.map { it.url })
+        assertEquals(setOf("chinese", "full color"), result.single().tags.map { it.title }.toSet())
+        assertEquals(setOf("別名"), result.single().altTitles)
+        assertEquals(42, JSONObject(parser.getDetailsMetadata(result.single())!!).getInt("total_pages"))
+        assertEquals(2, ctx.requests.count { it.url.encodedPath == "/api/v2/search" })
+        assertEquals(1, ctx.requests.count { it.url.encodedPath == "/api/v2/tags/ids" })
+        assertTrue(ctx.requests.none { it.url.encodedPath.contains("galleries/") })
+        assertEquals("language:\"chinese\" tag:\"full color\" -tag:\"netorare\"",
+            ctx.requests.first().url.queryParameter("query"))
+    }
+
+    @Test
+    fun `missing batch tag metadata is a real failure instead of accepting unknown exclusions`() = runBlocking {
+        val ctx = NhOfflineContext()
+        ctx.search = """{"result":[{"id":42,"english_title":"Fixture","thumbnail":"https://thumb.test/a.jpg","tag_ids":[2]}],"num_pages":1}"""
+        ctx.tagMetadata = "[]"
+        val parser = org.skepsun.kototoro.parsers.model.ContentParserSource.NHENTAI.newParser(ctx)
+            as org.skepsun.kototoro.parsers.core.ContentParserWrapper
+        assertThrows(ParseException::class.java) { runBlocking {
+            parser.getCombinedSearchPageJson(0, "NEWEST", "", """{"type":"term","field":"tag","value":"A"}""") { true }
+        } }
+    }
     @Test
     fun `new and legacy list image attributes resolve without empty covers`() {
         val parser = NhentaiParser(NhOfflineContext())

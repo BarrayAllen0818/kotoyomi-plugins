@@ -479,6 +479,55 @@ internal class JmParser(
         return result
     }
 
+    internal suspend fun getCombinedCandidates(page: Int, order: SortOrder, keyword: String,
+        field: String?, value: String?, expression: JSONObject,
+    ): org.skepsun.kototoro.parsers.core.CombinedSearchPage<Content> {
+        ensureDomains()
+        val mode = when (field) { "parody" -> 1; "author" -> 2; "tag" -> 3; "character" -> 4; else -> 0 }
+        val input = if (keyword.isNotBlank()) keyword else value.orEmpty()
+        if (input.isBlank()) {
+            val items = categoryList(sortParam(order), page, "0")
+            return org.skepsun.kototoro.parsers.core.CombinedSearchPage(items, items.isNotEmpty())
+        }
+        // A single required field is a superset of the complete condition; the host validates
+        // remaining fields using the candidate's details. No unrelated site-wide prefetch.
+        val actualMode = if (keyword.isNotBlank()) 0 else mode
+        val nativeTerms = mutableListOf<String>()
+        if (actualMode == 3) {
+            for ((kind, name) in org.skepsun.kototoro.parsers.core.WebsiteCombinedSearch.necessaryTerms(expression)) {
+                if (kind == "tag" && org.skepsun.kototoro.parsers.core.WebsiteCombinedSearch.safe(name)) {
+                    nativeTerms.add("+" + if (name.any(Char::isWhitespace)) "\"$name\"" else name)
+                }
+            }
+            fun exclude(node: JSONObject) {
+                if (node.optString("type") == "all") {
+                    val children = node.getJSONArray("children")
+                    for (i in 0 until children.length()) exclude(children.getJSONObject(i))
+                } else if (node.optString("type") == "not") {
+                    val child = node.getJSONObject("child")
+                    if (child.optString("type") == "term" && child.optString("field") == "tag" &&
+                        org.skepsun.kototoro.parsers.core.WebsiteCombinedSearch.safe(child.getString("value"))) {
+                        val name = child.getString("value")
+                        nativeTerms.add("-" + if (name.any(Char::isWhitespace)) "\"$name\"" else name)
+                    }
+                }
+            }
+            exclude(expression)
+        }
+        val searchInput = nativeTerms.takeIf { it.isNotEmpty() }?.joinToString(" ") ?: input
+        val path = "/search?search_query=${searchInput.urlEncoded()}&main_tag=$actualMode&page=$page&o=${sortParam(order)}"
+        val json = JSONObject(apiGet(path))
+        val content = json.optJSONArray("content") ?: throw ParseException("JM 组合搜索缺少作品列表", "$baseUrl$path")
+        val items = (0 until content.length()).map { index ->
+            parseComic(content.getJSONObject(index)) ?: throw ParseException("JM 组合搜索作品字段无效", "$baseUrl$path")
+        }
+        // The API's total can be capped at 10000 while later pages remain accessible.
+        val orderKeys = items.mapIndexedNotNull { index, item ->
+            content.getJSONObject(index).opt("update_at")?.toString()?.toLongOrNull()?.let { item.url to it }
+        }.toMap()
+        return org.skepsun.kototoro.parsers.core.CombinedSearchPage(items, items.isNotEmpty(), orderKeys)
+    }
+
     private suspend fun searchAlbum(inputId: String): Content {
         val path = "/album?id=$inputId"
         val jsonText = apiGet(path)
