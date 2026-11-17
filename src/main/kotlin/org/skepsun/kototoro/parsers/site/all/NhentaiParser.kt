@@ -866,6 +866,9 @@ internal class NhentaiParser(context: ContentLoaderContext) :
             context.cookieJar.loadForRequest(refreshUrl).any {
                 it.name in setOf("access_token", "refresh_token") && it.value.isNotBlank()
             }
+        }, onWait = { remainingMillis ->
+            val seconds = remainingMillis / 1000 + if (remainingMillis % 1000 > 0) 1 else 0
+            context.showToast("NH 请求正在等待，约剩 $seconds 秒", isLong = true)
         }) { webClient.httpGet(target, headers) }
     }
 
@@ -1476,6 +1479,21 @@ internal class NhentaiRateLimiter(
     }
 
     private val buckets = HashMap<Pair<String, Endpoint>, Bucket>()
+    private val noticeLock = Any()
+    private var lastNoticeAt: Long? = null
+
+    private fun notifyWaiting(wait: Long, onWait: (Long) -> Unit) {
+        val notify = synchronized(noticeLock) {
+            val time = now()
+            if (lastNoticeAt?.let { time - it < NOTICE_INTERVAL_MILLIS } == true) {
+                false
+            } else {
+                lastNoticeAt = time
+                true
+            }
+        }
+        if (notify) onWait(wait)
+    }
 
     private fun endpoint(url: HttpUrl): Endpoint? = when {
         url.encodedPath == "/api/v2/search" -> Endpoint.SEARCH
@@ -1509,7 +1527,12 @@ internal class NhentaiRateLimiter(
         bucket.blockedUntil = maxOf(bucket.blockedUntil ?: until, until)
     }
 
-    suspend fun execute(url: HttpUrl, authenticated: () -> Boolean, load: suspend () -> Response): Response {
+    suspend fun execute(
+        url: HttpUrl,
+        authenticated: () -> Boolean,
+        onWait: (Long) -> Unit = {},
+        load: suspend () -> Response,
+    ): Response {
         val endpoint = endpoint(url) ?: return load()
         val bucket = bucket(url, endpoint)
         return bucket.mutex.withLock {
@@ -1524,7 +1547,8 @@ internal class NhentaiRateLimiter(
                     maxOf(quotaWait, (bucket.blockedUntil?.minus(time) ?: 0L).coerceAtLeast(0L))
                 }
                 if (wait <= 0L) break
-                delay(wait)
+                notifyWaiting(wait, onWait)
+                delay(minOf(wait, NOTICE_INTERVAL_MILLIS))
             }
             currentCoroutineContext().ensureActive()
             var rateLimited = false
@@ -1558,6 +1582,7 @@ internal class NhentaiRateLimiter(
 
     companion object {
         private const val WINDOW_MILLIS = 60_000L
+        private const val NOTICE_INTERVAL_MILLIS = 15_000L
         private val clients = java.util.WeakHashMap<okhttp3.OkHttpClient, NhentaiRateLimiter>()
         fun forClient(client: okhttp3.OkHttpClient): NhentaiRateLimiter = synchronized(clients) {
             clients.getOrPut(client) { NhentaiRateLimiter() }

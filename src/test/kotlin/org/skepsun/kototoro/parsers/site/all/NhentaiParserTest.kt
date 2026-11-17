@@ -43,13 +43,17 @@ class NhentaiParserTest {
             runBlocking { first.getList(0, SortOrder.NEWEST, filter) }
         }
         assertTrue(error.getRetryDelay() in 1..1000)
+        assertTrue(ctx.toasts.isEmpty())
         ctx.status = 200
         val second = ContentParserSource.NHENTAI.newParser(ctx)
         assertNull(withTimeoutOrNull(100) { second.getList(0, SortOrder.NEWEST, filter) })
         assertEquals(1, ctx.requests.size)
+        assertEquals(1, ctx.toasts.size)
+        assertEquals("NH 请求正在等待，约剩 1 秒", ctx.toasts.single())
         delay(1000)
         assertTrue(second.getList(0, SortOrder.NEWEST, filter).isNotEmpty())
         assertEquals(2, ctx.requests.count { it.url.encodedPath == "/api/v2/search" })
+        assertEquals(1, ctx.toasts.size)
     }
 
     @Test
@@ -1026,6 +1030,8 @@ private class NhAuthContext : ContentLoaderContext() {
 }
 
 private class NhOfflineContext : ContentLoaderContext() {
+    val toasts: MutableList<String> = Collections.synchronizedList(mutableListOf())
+    override fun showToast(message: String, isLong: Boolean) { toasts.add(message) }
     val config = SourceConfigMock()
     val requests: MutableList<Request> = Collections.synchronizedList(mutableListOf())
     var gallery = requireNotNull(javaClass.getResource("/fixtures/nhentai/gallery-v2.json")).readText()
@@ -1089,6 +1095,83 @@ class NhentaiRateLimiterTest {
     private fun response(url: String, code: Int = 200, retryAfter: String? = null): Response = Response.Builder()
         .request(Request.Builder().url(url).build()).protocol(Protocol.HTTP_1_1).code(code).message("Fixture")
         .apply { if (retryAfter != null) header("Retry-After", retryAfter) }.body("{}".toResponseBody()).build()
+
+    @Test
+    fun `quota waiting reports decreasing remaining time without delaying dispatch`() = runTest {
+        val url = "https://nhentai.net/api/v2/search"
+        val limiter = NhentaiRateLimiter(now = { testScheduler.currentTime })
+        val notices = mutableListOf<Pair<Long, Long>>()
+        val onWait: (Long) -> Unit = { notices.add(testScheduler.currentTime to it) }
+        repeat(10) { limiter.execute(url.toHttpUrl(), { false }, onWait) { response(url) }.close() }
+        assertTrue(notices.isEmpty())
+        limiter.execute(url.toHttpUrl(), { false }, onWait) { response(url) }.close()
+        assertEquals(listOf(0L to 60_000L, 15_000L to 45_000L, 30_000L to 30_000L, 45_000L to 15_000L), notices)
+        assertEquals(60_000L, testScheduler.currentTime)
+    }
+
+    @Test
+    fun `concurrent endpoints and queued callers merge wait notices for one client`() = runTest {
+        val limiter = NhentaiRateLimiter(now = { testScheduler.currentTime })
+        val search = "https://nhentai.net/api/v2/search"
+        val detail = "https://nhentai.net/api/v2/galleries/42"
+        limiter.observeLimit(search.toHttpUrl(), "60")
+        limiter.observeLimit(detail.toHttpUrl(), "30")
+        val notices = mutableListOf<Long>()
+        var sent = 0
+        listOf(search, search, search, detail).map { url ->
+            async {
+                limiter.execute(url.toHttpUrl(), { false }, onWait = { notices.add(testScheduler.currentTime) }) {
+                    sent++; response(url)
+                }.close()
+            }
+        }.awaitAll()
+        assertEquals(listOf(0L, 15_000L, 30_000L, 45_000L), notices)
+        assertEquals(4, sent)
+        assertEquals(60_000L, testScheduler.currentTime)
+    }
+
+    @Test
+    fun `canceling a wait stops all subsequent notices and sends no request`() = runTest {
+        val url = "https://nhentai.net/api/v2/search"
+        val limiter = NhentaiRateLimiter(now = { testScheduler.currentTime })
+        limiter.observeLimit(url.toHttpUrl(), "60")
+        val notices = mutableListOf<Long>()
+        var sent = 0
+        val pending = launch {
+            limiter.execute(url.toHttpUrl(), { false }, onWait = { notices.add(testScheduler.currentTime) }) {
+                sent++; response(url)
+            }.close()
+        }
+        testScheduler.runCurrent()
+        testScheduler.advanceTimeBy(20_000)
+        pending.cancelAndJoin()
+        assertEquals(listOf(0L, 15_000L), notices)
+        testScheduler.advanceUntilIdle()
+        testScheduler.advanceTimeBy(60_000)
+        testScheduler.runCurrent()
+        assertEquals(listOf(0L, 15_000L), notices)
+        assertEquals(0, sent)
+        limiter.execute(url.toHttpUrl(), { false }, onWait = { fail("No wait remains") }) { response(url) }.close()
+    }
+
+    @Test
+    fun `wait notices recompute an extended server pause and stop at the exact deadline`() = runTest {
+        val url = "https://nhentai.net/api/v2/search"
+        val limiter = NhentaiRateLimiter(now = { testScheduler.currentTime })
+        limiter.observeLimit(url.toHttpUrl(), "35")
+        val notices = mutableListOf<Pair<Long, Long>>()
+        val pending = async {
+            limiter.execute(url.toHttpUrl(), { false }, onWait = { notices.add(testScheduler.currentTime to it) }) {
+                response(url)
+            }.close()
+        }
+        testScheduler.runCurrent()
+        testScheduler.advanceTimeBy(10_000)
+        limiter.observeLimit(url.toHttpUrl(), "40")
+        pending.await()
+        assertEquals(listOf(0L to 35_000L, 15_000L to 35_000L, 30_000L to 20_000L, 45_000L to 5_000L), notices)
+        assertEquals(50_000L, testScheduler.currentTime)
+    }
 
     @Test
     fun `anonymous and authenticated search respect separate minute capacities under concurrency`() = runTest {
