@@ -5,10 +5,13 @@ package org.skepsun.kototoro.parsers.site.all
 import okhttp3.Headers
 import okhttp3.Interceptor
 import okhttp3.Response
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.jsoup.nodes.Document
 import org.skepsun.kototoro.parsers.InternalParsersApi
 import org.skepsun.kototoro.parsers.ContentLoaderContext
 import org.skepsun.kototoro.parsers.ContentSourceParser
+import org.skepsun.kototoro.parsers.ContentParserAuthProvider
+import org.skepsun.kototoro.parsers.exception.AuthRequiredException
 import org.skepsun.kototoro.parsers.core.PagedContentParser
 import org.skepsun.kototoro.parsers.model.ContentRating
 import org.skepsun.kototoro.parsers.model.Content
@@ -45,7 +48,43 @@ import java.util.EnumSet
  */
 @ContentSourceParser("NHENTAI", "nhentai", type=ContentType.HENTAI_MANGA)
 internal class NhentaiParser(context: ContentLoaderContext) :
-    PagedContentParser(context, ContentParserSource.NHENTAI, pageSize = 25), Interceptor {
+    PagedContentParser(context, ContentParserSource.NHENTAI, pageSize = 25), Interceptor, ContentParserAuthProvider {
+
+    override val authUrl: String get() = "https://$domain/login"
+
+    override suspend fun isAuthorized(): Boolean = try {
+        if (!hasWebSession()) false else { getUsername(); true }
+    } catch (_: AuthRequiredException) {
+        false
+    }
+
+    override suspend fun getUsername(): String {
+        if (!hasWebSession()) throw AuthRequiredException(source)
+        val operation = requestContext()
+        val url = "https://${operation.domain}/api/v2/user"
+        val user = webClient.httpGet(url, operation.headers).use { it.parseJson() }
+        currentCoroutineContext().ensureActive()
+        return user.optString("username").takeIf { it.isNotBlank() }
+            ?: throw ParseException("NH account: missing username", url)
+    }
+
+    private fun hasWebSession(): Boolean {
+        val url = "https://$domain/auth/refresh".toHttpUrlOrNull() ?: return false
+        return context.cookieJar.loadForRequest(url).any {
+            it.name in setOf("access_token", "refresh_token") && it.value.isNotBlank()
+        }
+    }
+
+    private fun webAccessToken(origin: HttpUrl): String? = context.cookieJar.loadForRequest(origin)
+        .firstOrNull { it.name == "access_token" && it.value.isNotBlank() }?.value
+        ?.let { java.net.URLDecoder.decode(it.replace("+", "%2B"), "UTF-8") }
+
+    private class WebAuthState { var rejectedSession: String? = null }
+
+    private companion object {
+        // List sessions create separate parsers, while the website rotates one shared browser session.
+        val authStates = java.util.WeakHashMap<okhttp3.CookieJar, MutableMap<String, WebAuthState>>()
+    }
 
     override val configKeyDomain = org.skepsun.kototoro.parsers.config.ConfigKey.Domain("nhentai.net")
     override val availableSortOrders: Set<SortOrder> = EnumSet.of(
@@ -813,10 +852,66 @@ internal class NhentaiParser(context: ContentLoaderContext) :
 
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
-        return chain.proceed(request.newBuilder()
+        val prepared = request.newBuilder()
             .header("Referer", request.header("Referer") ?: "https://$domain/")
             .header("User-Agent", UserAgents.CHROME_DESKTOP)
-            .build())
+            .build()
+        val origin = "https://$domain/".toHttpUrlOrNull()
+        if (origin == null || request.url.scheme != origin.scheme || request.url.host != origin.host ||
+            request.url.port != origin.port || !request.url.encodedPath.startsWith("/api/v2/")) {
+            return chain.proceed(prepared)
+        }
+        val state = synchronized(authStates) {
+            authStates.getOrPut(context.cookieJar) { HashMap() }.getOrPut(origin.toString()) { WebAuthState() }
+        }
+        val refreshUrl = origin.resolve("/auth/refresh")!!
+        fun sessionIdentity(): String = context.cookieJar.loadForRequest(refreshUrl)
+            .filter { it.name == "access_token" || it.name == "refresh_token" }
+            .sortedBy { it.name }.joinToString("\u0000") { "${it.name}=${it.value}" }
+        fun authenticated(token: String?) = prepared.newBuilder().apply {
+            if (token != null) header("Authorization", "User $token")
+        }.build()
+        val token = webAccessToken(origin)
+        val identity = sessionIdentity()
+        if (identity.isEmpty()) return chain.proceed(prepared)
+        synchronized(state) {
+            if (state.rejectedSession == identity) throw AuthRequiredException(source)
+        }
+        val response = if (token != null) chain.proceed(authenticated(token)) else null
+        if (response != null && response.code != 401) return response
+        response?.close()
+        val renewed = synchronized(state) {
+            val current = webAccessToken(origin)
+            if (current != null && current != token) return@synchronized current
+            if (state.rejectedSession == sessionIdentity()) throw AuthRequiredException(source)
+            val refreshIdentity = sessionIdentity()
+            val refresh = prepared.newBuilder().url(refreshUrl).removeHeader("Authorization")
+                .post(ByteArray(0).toRequestBody()).build()
+            val result = chain.proceed(refresh)
+            if (result.code == 401 || result.code == 403) {
+                result.close()
+                val browserToken = webAccessToken(origin)
+                if (browserToken != null && browserToken != token) return@synchronized browserToken
+                state.rejectedSession = refreshIdentity
+                throw AuthRequiredException(source)
+            }
+            // Preserve a genuine server error, including its Retry-After, for the host.
+            if (!result.isSuccessful) return result
+            result.close()
+            webAccessToken(origin)?.takeIf { it != token } ?: run {
+                state.rejectedSession = sessionIdentity()
+                throw AuthRequiredException(source)
+            }
+        }
+        val retried = chain.proceed(authenticated(renewed))
+        if (retried.code == 401) {
+            retried.close()
+            synchronized(state) {
+                if (webAccessToken(origin) == renewed) state.rejectedSession = sessionIdentity()
+            }
+            throw AuthRequiredException(source)
+        }
+        return retried
     }
 
     override suspend fun getListPage(page: Int, order: SortOrder, filter: ContentListFilter): List<Content> {

@@ -31,6 +31,183 @@ import org.skepsun.kototoro.parsers.util.generateUid
 
 class NhentaiParserTest {
     @Test
+    fun `web login exposes verified account and anonymous browsing remains available`() = runBlocking {
+        val ctx = NhAuthContext()
+        ctx.parser = NhentaiParser(ctx)
+        val parser = ContentParserSource.NHENTAI.newParser(ctx)
+        val auth = requireNotNull(parser.authorizationProvider)
+        assertEquals("https://nhentai.net/login", auth.authUrl)
+        assertFalse(auth.isAuthorized())
+        assertTrue(ctx.requests.isEmpty())
+        parser.getList(0, SortOrder.NEWEST, ContentListFilter(query = "fixture"))
+        assertNull(ctx.requests.single().header("Authorization"))
+        ctx.setAccess("fixture-access")
+        assertTrue(auth.isAuthorized())
+        assertEquals("Fixture User", auth.getUsername())
+        assertEquals("User fixture-access", ctx.requests.last().header("Authorization"))
+    }
+
+    @Test
+    fun `cookie credential only authenticates same origin API and reads latest browser login`() {
+        val ctx = NhAuthContext()
+        ctx.setAccess("first-access")
+        val parser = NhentaiParser(ctx).also { ctx.parser = it }
+        for ((url, expected) in listOf(
+            "https://nhentai.net/api/v2/search" to "User first-access",
+            "https://thumb.test/api/v2/search" to null,
+            "https://nhentai.net:8443/api/v2/search" to null,
+            "http://nhentai.net/api/v2/search" to null,
+            "https://nhentai.net/login" to null,
+            "https://t1.nhentai.net/galleries/1/thumb.jpg" to null,
+        )) {
+            ctx.httpClient.newCall(Request.Builder().url(url).build()).execute().close()
+            assertEquals(expected, ctx.requests.last().header("Authorization"), url)
+        }
+        ctx.setAccess("new-browser-access")
+        ctx.httpClient.newCall(Request.Builder().url("https://nhentai.net/api/v2/user").build()).execute().close()
+        assertEquals("User new-browser-access", ctx.requests.last().header("Authorization"))
+        assertNull(parser.getRequestHeaders()["Authorization"])
+    }
+
+    @Test
+    fun `expired web cookie refreshes once and retries original request with replacement`() = runBlocking {
+        val ctx = NhAuthContext()
+        ctx.setAccess("expired")
+        ctx.setRefresh()
+        val parser = NhentaiParser(ctx).also { ctx.parser = it }
+        ctx.respond = { request -> when {
+            request.url.encodedPath == "/auth/refresh" -> {
+                ctx.setAccess("replacement"); 200 to "{}"
+            }
+            request.header("Authorization") == "User expired" -> 401 to "{}"
+            else -> 200 to "{\"result\":[],\"num_pages\":0}"
+        } }
+        parser.getListPage(1, SortOrder.NEWEST, ContentListFilter(query = "fixture"))
+        assertEquals(listOf("/api/v2/search", "/auth/refresh", "/api/v2/search"),
+            ctx.requests.map { it.url.encodedPath })
+        assertEquals("POST", ctx.requests[1].method)
+        assertNull(ctx.requests[1].header("Authorization"))
+        assertEquals("User replacement", ctx.requests.last().header("Authorization"))
+    }
+
+    @Test
+    fun `rejected refresh asks for login without repeatedly refreshing the same session`() = runBlocking {
+        val ctx = NhAuthContext()
+        ctx.setAccess("expired"); ctx.setRefresh()
+        val parser = NhentaiParser(ctx).also { ctx.parser = it }
+        ctx.respond = { 401 to "{\"error\":\"Expired\"}" }
+        repeat(2) {
+            assertThrows(org.skepsun.kototoro.parsers.exception.AuthRequiredException::class.java) { runBlocking {
+                parser.getListPage(1, SortOrder.NEWEST, ContentListFilter(query = "fixture"))
+            } }
+        }
+        assertEquals(1, ctx.requests.count { it.url.encodedPath == "/auth/refresh" })
+        ctx.setAccess("fresh-login")
+        ctx.respond = { 200 to "{\"result\":[],\"num_pages\":0}" }
+        parser.getListPage(1, SortOrder.NEWEST, ContentListFilter(query = "fixture"))
+        assertEquals("User fresh-login", ctx.requests.last().header("Authorization"))
+    }
+
+    @Test
+    fun `two parser instances share one refresh for concurrent expired requests`() = runBlocking {
+        val ctx = NhAuthContext()
+        ctx.setAccess("expired"); ctx.setRefresh()
+        val first = NhentaiParser(ctx)
+        val second = NhentaiParser(ctx)
+        val arrived = java.util.concurrent.CountDownLatch(2)
+        val refreshes = java.util.concurrent.atomic.AtomicInteger()
+        ctx.respond = { request -> when {
+            request.url.encodedPath == "/auth/refresh" -> {
+                refreshes.incrementAndGet(); ctx.setAccess("replacement"); 200 to "{}"
+            }
+            request.header("Authorization") == "User expired" -> {
+                arrived.countDown()
+                check(arrived.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                401 to "{}"
+            }
+            else -> 200 to "{}"
+        } }
+        val request = Request.Builder().url("https://nhentai.net/api/v2/user").build()
+        val clients = listOf(first, second).map { parser ->
+            OkHttpClient.Builder().addInterceptor(parser).addInterceptor(ctx.terminal).build()
+        }
+        clients.map { client -> async(Dispatchers.IO) {
+            client.newCall(request).execute().use { assertEquals(200, it.code) }
+        } }.awaitAll()
+        assertEquals(1, refreshes.get())
+        assertEquals(2, ctx.requests.count { it.header("Authorization") == "User replacement" })
+    }
+
+    @Test
+    fun `missing access cookie can renew from browser refresh session`() = runBlocking {
+        val ctx = NhAuthContext()
+        ctx.setRefresh()
+        val parser = NhentaiParser(ctx).also { ctx.parser = it }
+        ctx.respond = { request ->
+            if (request.url.encodedPath == "/auth/refresh") {
+                ctx.setAccess("renewed"); 200 to "{}"
+            } else 200 to "{\"username\":\"Renewed User\"}"
+        }
+        assertEquals("Renewed User", parser.getUsername())
+        assertEquals(listOf("/auth/refresh", "/api/v2/user"), ctx.requests.map { it.url.encodedPath })
+        assertEquals("User renewed", ctx.requests.last().header("Authorization"))
+    }
+
+    @Test
+    fun `second unauthorized response requests login and never loops renewal`() = runBlocking {
+        val ctx = NhAuthContext()
+        ctx.setAccess("expired"); ctx.setRefresh()
+        val parser = NhentaiParser(ctx).also { ctx.parser = it }
+        ctx.respond = { request ->
+            if (request.url.encodedPath == "/auth/refresh") {
+                ctx.setAccess("still-invalid"); 200 to "{}"
+            } else 401 to "{}"
+        }
+        assertFalse(parser.isAuthorized())
+        assertEquals(3, ctx.requests.size)
+        assertFalse(parser.isAuthorized())
+        assertEquals(3, ctx.requests.size)
+    }
+
+    @Test
+    fun `refresh transport failure is retriable and retains server errors`() = runBlocking {
+        val ctx = NhAuthContext()
+        ctx.setAccess("expired"); ctx.setRefresh()
+        val parser = NhentaiParser(ctx).also { ctx.parser = it }
+        for (status in listOf(429, 503)) {
+            ctx.respond = { request ->
+                (if (request.url.encodedPath == "/auth/refresh") status else 401) to "{}"
+            }
+            ctx.httpClient.newCall(Request.Builder().url("https://nhentai.net/api/v2/user").build())
+                .execute().use { assertEquals(status, it.code) }
+        }
+        ctx.respond = { request ->
+            if (request.url.encodedPath == "/auth/refresh") {
+                ctx.setAccess("recovered"); 200 to "{}"
+            } else if (request.header("Authorization") == "User expired") 401 to "{}"
+            else 200 to "{\"username\":\"Recovered\"}"
+        }
+        assertEquals("Recovered", parser.getUsername())
+    }
+
+    @Test
+    fun `browser login replacing a rejected refresh remains authenticated`() = runBlocking {
+        val ctx = NhAuthContext()
+        ctx.setAccess("expired"); ctx.setRefresh()
+        val parser = NhentaiParser(ctx).also { ctx.parser = it }
+        ctx.respond = { request -> when {
+            request.url.encodedPath == "/auth/refresh" -> {
+                ctx.setAccess("browser-login"); 401 to "{}"
+            }
+            request.header("Authorization") == "User expired" -> 401 to "{}"
+            else -> 200 to "{\"username\":\"Browser User\"}"
+        } }
+        assertEquals("Browser User", parser.getUsername())
+        assertTrue(parser.isAuthorized())
+        assertEquals(1, ctx.requests.count { it.url.encodedPath == "/auth/refresh" })
+    }
+
+    @Test
     fun `alternative tag queries merge newest results without duplicates and reject incomparable sorting before requests`() = runBlocking {
         val ctx = NhOfflineContext()
         ctx.onRequest = { request ->
@@ -720,6 +897,49 @@ class NhentaiParserTest {
 }
 
 /** Synthetic terminal interceptor: no network, local cookies or authentication state. */
+private class NhAuthContext : ContentLoaderContext() {
+    private val cookies = java.util.concurrent.CopyOnWriteArrayList<okhttp3.Cookie>()
+    val requests = Collections.synchronizedList(mutableListOf<Request>())
+    var parser: NhentaiParser? = null
+    @Volatile var respond: (Request) -> Pair<Int, String> = { request ->
+        200 to if (request.url.encodedPath == "/api/v2/user") "{\"username\":\"Fixture User\"}"
+        else "{\"result\":[],\"num_pages\":0}"
+    }
+    fun setAccess(value: String) = setCookie("access_token", value, "/")
+    fun setRefresh() = setCookie("refresh_token", "fixture-refresh", "/auth")
+    private fun setCookie(name: String, value: String, path: String) {
+        cookieJar.saveFromResponse("https://nhentai.net/".toHttpUrl(), listOf(okhttp3.Cookie.Builder()
+            .name(name).value(value).hostOnlyDomain("nhentai.net").path(path).secure().build()))
+    }
+    override val cookieJar = object : CookieJar {
+        override fun loadForRequest(url: HttpUrl) = cookies.filter { it.matches(url) && it.expiresAt > System.currentTimeMillis() }
+        override fun saveFromResponse(url: HttpUrl, incoming: List<okhttp3.Cookie>) {
+            incoming.forEach { cookie ->
+                cookies.removeAll { it.name == cookie.name && it.domain == cookie.domain && it.path == cookie.path }
+                cookies.add(cookie)
+            }
+        }
+    }
+    val terminal = okhttp3.Interceptor { chain ->
+        val request = chain.request(); requests.add(request)
+        val (status, body) = respond(request)
+        Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(status).message("Fixture")
+            .body(body.toResponseBody()).build()
+    }
+    override val httpClient = OkHttpClient.Builder().cookieJar(cookieJar)
+        .addInterceptor { chain -> parser?.intercept(chain) ?: chain.proceed(chain.request()) }
+        .addInterceptor(terminal).build()
+    override fun getConfig(source: ContentSource) = SourceConfigMock()
+    override fun getDefaultUserAgent() = "NH auth fixture"
+    override fun newParserInstance(source: ContentSource): ContentParser = error("Unused")
+    override fun newLinkResolver(link: HttpUrl): LinkResolver = error("Unused")
+    @Deprecated("Provide a base url")
+    override suspend fun evaluateJs(script: String): String? = error("Unused")
+    override suspend fun evaluateJs(baseUrl: String, script: String): String? = error("Unused")
+    override fun redrawImageResponse(response: Response, redraw: (Bitmap) -> Bitmap): Response = error("Unused")
+    override fun createBitmap(width: Int, height: Int): Bitmap = error("Unused")
+}
+
 private class NhOfflineContext : ContentLoaderContext() {
     val config = SourceConfigMock()
     val requests: MutableList<Request> = Collections.synchronizedList(mutableListOf())
