@@ -7,7 +7,9 @@
 - 状态：待验收。2026-11-17 用户确认返修，JM 插件代码和离线检查已完成，预期及宿主简繁标签、颜色、NH 名称兼容范围见[宿主 BUG-017、BUG-018](../../kotoyomi/docs/BUG.md#组合搜索)。
 - 原因：JM 查询总数 35，第一页已返回全部 35 部；下一页仍返回同一批。`getCombinedCandidates` 只用非空判定还有后续，触发共享分页的重复页保护。
 - 已确认处理：在 JM 组合查询中读取有效总数；总数未封顶且本页覆盖总数时结束，封顶总数仍允许查询后续页。保留共享重复页保护及其他网站的分页行为。
-- 电脑验证：新增 1、35、80 部三种末页用例在旧实现上均因重复页保护失败，修复后 JM、响应解析、共享分页与 NH 共 106 项离线检查通过，无失败、错误或跳过。已有封顶总数及中间筛选空页用例仍通过，未修改共享分页。JVM JAR 与 D8 9.3.16 打包通过，打包日志为空；插件 SHA-256 `e62e85b6a1ec060efb996bfc993b78d676467a441c6be019b156373e47361586`。日志为 `build/jm-terminal-red.log`、`build/search-repair-green.log`、`build/search-repair-d8.log`。正式宿主线上验证、发布及设备体验状态另行更新。
+- 电脑验证：新增 1、35、80 部三种末页用例在旧实现上均因重复页保护失败，修复后 JM、响应解析、共享分页与 NH 共 106 项离线检查通过，无失败、错误或跳过。已有封顶总数及中间筛选空页用例仍通过，未修改共享分页。JVM JAR 与 D8 9.3.16 打包通过，打包日志为空；插件 SHA-256 `e62e85b6a1ec060efb996bfc993b78d676467a441c6be019b156373e47361586`。日志为 `build/jm-terminal-red.log`、`build/search-repair-green.log`、`build/search-repair-d8.log`。源码 `3aca9edd` 已推送 `origin/master`；插件 1.0.150 通过原仓库地址发布，发布提交 `8ff58ab50b58bb36746dfdfef3d06a162f803a8e`，索引及下载哈希已核验，`http_verified=true`。发布记录见 `build/search-repair-publish.log`；候选工作树 `build/plugin-releases/candidate-i_jmnmu3` 保留。正式宿主线上验证及设备体验状态另行更新。
+
+- 配套宿主线上验证：`app/build/search-repair-final.log` 的正式插件 JAR 用例，以简体原始条件“大乳晕、大屁股”取得 20+15 部且末页后为空，只请求一次 JM 搜索；NH 带显示性别后缀条件取得 25+25 部。相关名称转换由宿主负责，插件只包含上述 JM 分页修复。宿主新包安装期间手机连接消失，设备与用户验收未完成，详见宿主 BUG-017、BUG-018。
 
 ## Hanime1 作品资料
 
