@@ -17,6 +17,17 @@
 
 ## NH 网页登录
 
+### BUG-006 续期接口的临时 403 被记成登录失效
+
+- 状态：待验收。2026-11-20 用户确认修复；NH 插件修改、离线回归及 DEX 打包完成，手机更新后的实际续期体验尚待验收。
+- 预期依据：[NH 网页登录](PRD.md#网页登录)要求自动续期并正确区分网站验证与登录失效。
+- 原因与复现：访问凭据失效后，`/auth/refresh` 返回带 Cloudflare 验证标记的 403，插件直接抛出登录异常并记录被拒绝的凭据；宿主无法取得原响应来处理验证。服务器恢复后，同一组凭据仍被拒绝，重建解析器也不再发请求。该路径已离线复现，但用户当次掉登录的历史响应未保留，不能认定为同一触发原因。
+- 已确认处理：仅修改 NH 插件及现有测试，续期 403 保留响应供宿主处理，不写入登录失效记录；保留明确认证失败时要求重新登录、并发续期和凭据隔离。测试覆盖网站验证响应可见、同一会话跨解析器恢复，以及真实 `Set-Cookie` 处理。
+- 实现：仅续期 401 记录被拒绝的凭据；403 的状态、响应头和正文交给宿主处理网站验证。续期期间网页登录换入新凭据时，401、403 均优先使用新凭据重试。只修改 NH 实现，宿主、共享插件接口和其他来源未改，无需重装 APK。
+- 离线验证：新增恢复测试在旧实现中因 `AuthRequiredException` 失败，同批 45 项仅该项失败；修复后最终 143 项全部通过，无失败、错误或跳过，其中 NH 解析 45 项、接口额度 15 项、图片服务器缓存 5 项、JM 解析及响应 73 项、组合分页 5 项。覆盖普通及 Cloudflare 验证 403 的原响应可见、同一会话在原解析器和新解析器中恢复、实际 Cookie 请求头与 `Set-Cookie` 更新、访问凭据缺失、401 失效、503 恢复、并发续期及网页登录替换凭据。测试完全离线，未操作用户账号。
+- 验证命令：`gradlew.bat test --tests org.skepsun.kototoro.parsers.site.all.NhentaiParserTest --tests org.skepsun.kototoro.parsers.site.all.NhentaiRateLimiterTest --tests org.skepsun.kototoro.parsers.site.all.NhentaiCdnCacheTest --tests org.skepsun.kototoro.parsers.site.zh.JmComicTest --tests org.skepsun.kototoro.parsers.site.zh.JmComicResponseTest --tests org.skepsun.kototoro.parsers.core.CombinedSearchSessionTest jar pluginDexClasspath --init-script .github/scripts/plugin-classpath.gradle --offline --no-daemon --console=plain`。证据为忽略目录中的 `build/nh-refresh-403-red.log`、`build/nh-refresh-403-red-results.xml`、`build/nh-refresh-403-final-checks.log` 和 `build/nh-refresh-403-verification.json`。
+- 构建与复查：JVM JAR 构建及 D8 9.3.16 打包通过，使用 Android 34 API 和最低 Android 21，打包日志为空，产物仅含有效 `classes.dex`。SHA-256 为 `00ec213b2d41cd45af0fabce19a33d8ff0def71db53234e820e0599fa16aa2c8`；日志为 `build/nh-refresh-403-d8.log`。已复查认证失败与网站验证的区分、响应关闭、共享会话锁和凭据替换，未发现本次改动的阻塞项。真实网站验证与长期登录续期未由离线测试替代。
+
 ### BUG-004 登录页浏览器信息与手机网页组件不一致
 
 - 状态：待验收。2026-11-17 用户反馈 CF 验证失败，并确认先对照真实手机浏览器信息，再修改 NH 插件、验证和发布；浏览器信息修正及插件自动检查已完成，真实 CF 验证尚未通过验收。

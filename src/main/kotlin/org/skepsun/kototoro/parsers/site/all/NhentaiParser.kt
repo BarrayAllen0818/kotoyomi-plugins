@@ -914,13 +914,19 @@ internal class NhentaiParser(context: ContentLoaderContext) :
                 .post(ByteArray(0).toRequestBody()).build()
             val result = proceed(refresh)
             if (result.code == 401 || result.code == 403) {
-                result.close()
                 val browserToken = webAccessToken(origin)
-                if (browserToken != null && browserToken != token) return@synchronized browserToken
-                state.rejectedSession = refreshIdentity
-                throw AuthRequiredException(source)
+                if (browserToken != null && browserToken != token) {
+                    result.close()
+                    return@synchronized browserToken
+                }
+                if (result.code == 401) {
+                    result.close()
+                    state.rejectedSession = refreshIdentity
+                    throw AuthRequiredException(source)
+                }
             }
-            // Preserve a genuine server error, including its Retry-After, for the host.
+            // Keep website challenges (403) and server errors intact for the host to handle.
+            // They must not be remembered as a rejected browser login.
             if (!result.isSuccessful) return result
             result.close()
             webAccessToken(origin)?.takeIf { it != token } ?: run {
