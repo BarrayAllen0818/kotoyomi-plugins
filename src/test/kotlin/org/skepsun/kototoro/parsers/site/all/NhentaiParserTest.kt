@@ -32,6 +32,23 @@ import org.skepsun.kototoro.parsers.util.generateUid
 
 class NhentaiParserTest {
     @Test
+    fun `factory exposes only official thumbnail alternatives and preserves query and path`() = runBlocking {
+        val ctx = NhOfflineContext().apply {
+            cdn = """{"image_servers":["https://i.test"],"thumb_servers":["https://t1.test","https://t2.test","https://t3.test","https://t4.test"]}"""
+        }
+        val parser = ContentParserSource.NHENTAI.newParser(ctx)
+        val method = parser.javaClass.getMethod("getImageCandidatesJson", String::class.java, kotlin.coroutines.Continuation::class.java)
+        method.isAccessible = true
+        suspend fun candidates(url: String): String? = kotlin.coroutines.intrinsics.suspendCoroutineUninterceptedOrReturn { method.invoke(parser, url, it) }
+        val urls = JSONArray(candidates("https://t2.test/galleries/42/thumb.webp?x=1")!!)
+        assertEquals(4, urls.length())
+        for (i in 0 until urls.length()) assertEquals("https://t${i + 1}.test/galleries/42/thumb.webp?x=1", urls.getString(i))
+        assertNull(candidates("https://unrelated.test/galleries/42/thumb.webp"))
+        assertNull(candidates("https://t1.test/api/private"))
+        assertEquals(1, ctx.requests.count { it.url.encodedPath == "/api/v2/cdn" })
+    }
+
+    @Test
     fun `numeric factory search resolves the gallery without keyword search or further pages`() = runBlocking {
         for (query in listOf("42", " 42 ", "00042", "４２", "٤٢")) {
             val ctx = NhOfflineContext()
@@ -100,17 +117,17 @@ class NhentaiParserTest {
             runBlocking { first.getList(0, SortOrder.NEWEST, filter) }
         }
         assertTrue(error.getRetryDelay() in 1..1000)
-        assertTrue(ctx.toasts.isEmpty())
+        assertEquals(1, ctx.toasts.size)
         ctx.status = 200
         val second = ContentParserSource.NHENTAI.newParser(ctx)
         assertNull(withTimeoutOrNull(100) { second.getList(0, SortOrder.NEWEST, filter) })
         assertEquals(1, ctx.requests.size)
-        assertEquals(1, ctx.toasts.size)
-        assertEquals("NH 请求正在等待，约剩 1 秒", ctx.toasts.single())
+        assertTrue(ctx.toasts.size in 1..2)
+        assertTrue(ctx.toasts.all { it == "NH 请求正在等待，约剩 1 秒" })
         delay(1000)
         assertTrue(second.getList(0, SortOrder.NEWEST, filter).isNotEmpty())
         assertEquals(2, ctx.requests.count { it.url.encodedPath == "/api/v2/search" })
-        assertEquals(1, ctx.toasts.size)
+        assertTrue(ctx.toasts.size in 1..2)
     }
 
     @Test

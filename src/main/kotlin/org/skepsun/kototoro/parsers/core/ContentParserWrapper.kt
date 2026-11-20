@@ -58,6 +58,9 @@ internal class ContentParserWrapper(
 	public fun getDetailsMetadata(content: Content): String? =
 		org.skepsun.kototoro.parsers.model.WebsiteWorkMetadata.get(content)
 
+    public suspend fun getImageCandidatesJson(url: String): String? =
+        (delegate as? org.skepsun.kototoro.parsers.site.all.NhentaiParser)?.imageCandidates(url)
+
 	override suspend fun getDetails(manga: Content): Content = withContext(Dispatchers.Default) {
 		WebsiteWorkMetadata.inherit(manga, delegate.getDetails(manga))
 	}
