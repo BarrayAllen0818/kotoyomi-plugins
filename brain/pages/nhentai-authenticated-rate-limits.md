@@ -5,7 +5,7 @@ category: reference
 status: active
 tags: [nhentai, rate-limit]
 created: "2026-11-23T23:33:27"
-updated: "2026-11-23T23:33:27"
+updated: "2026-11-24T00:03:24"
 ---
 
 <!-- compiled_truth -->
@@ -35,4 +35,10 @@ updated: "2026-11-23T23:33:27"
   kind: decision
   summary: "实测确认登录搜索、详情、相关作品及标签额度，并记录 429 等待和适用范围"
   source: "2026-11-23 23:30–23:33（北京时间）Playwright 请求状态及响应头"
+  affects: [nhentai-authenticated-rate-limits]
+
+- time: 2026-11-24T00:03:24
+  kind: decision
+  summary: "用户基于实测确认将限流判断交给 NH：网站的 429 已直接说明额度耗尽及建议重试时间，取消插件额外等待；该决定不改变先前实测的服务端额度。"
+  source: "用户确认的插件 docs/PRD.md「网站错误反馈」"
   affects: [nhentai-authenticated-rate-limits]
