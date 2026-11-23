@@ -105,29 +105,24 @@ class NhentaiParserTest {
         assertTrue(ctx.requests.none { it.url.encodedPath == "/api/v2/galleries/42" })
     }
     @Test
-    fun `429 headers pause a new factory instance and cancellation sends no request`() = runBlocking {
+    fun `429 preserves server retry guidance and does not delay the next request or emit a Toast`() = runBlocking {
         val ctx = NhOfflineContext().apply {
             status = 429
-            responseHeaders = okhttp3.Headers.headersOf("Retry-After", "1")
+            responseHeaders = okhttp3.Headers.headersOf("Retry-After", "60")
         }
         ctx.parser = NhentaiParser(ctx)
-        val first = ContentParserSource.NHENTAI.newParser(ctx)
         val filter = ContentListFilter(query = "fixture")
+        val first = ContentParserSource.NHENTAI.newParser(ctx)
         val error = assertThrows(org.skepsun.kototoro.parsers.exception.TooManyRequestExceptions::class.java) {
             runBlocking { first.getList(0, SortOrder.NEWEST, filter) }
         }
-        assertTrue(error.getRetryDelay() in 1..1000)
-        assertEquals(1, ctx.toasts.size)
+        assertTrue(error.getRetryDelay() in 59_000..60_000)
+        assertTrue(error.url.endsWith("/api/v2/search?query=fixture&sort=date&page=1"))
         ctx.status = 200
         val second = ContentParserSource.NHENTAI.newParser(ctx)
-        assertNull(withTimeoutOrNull(100) { second.getList(0, SortOrder.NEWEST, filter) })
-        assertEquals(1, ctx.requests.size)
-        assertTrue(ctx.toasts.size in 1..2)
-        assertTrue(ctx.toasts.all { it == "NH 请求正在等待，约剩 1 秒" })
-        delay(1000)
-        assertTrue(second.getList(0, SortOrder.NEWEST, filter).isNotEmpty())
+        assertTrue(withTimeout(5_000) { second.getList(0, SortOrder.NEWEST, filter) }.isNotEmpty())
         assertEquals(2, ctx.requests.count { it.url.encodedPath == "/api/v2/search" })
-        assertTrue(ctx.toasts.size in 1..2)
+        assertTrue(ctx.toasts.isEmpty())
     }
 
     @Test
@@ -1257,276 +1252,6 @@ private class NhOfflineContext : ContentLoaderContext() {
     override suspend fun evaluateJs(baseUrl: String, script: String): String? = error("Unused")
     override fun redrawImageResponse(response: Response, redraw: (Bitmap) -> Bitmap): Response = error("Unused")
     override fun createBitmap(width: Int, height: Int): Bitmap = error("Unused")
-}
-
-class NhentaiRateLimiterTest {
-    private fun response(url: String, code: Int = 200, retryAfter: String? = null): Response = Response.Builder()
-        .request(Request.Builder().url(url).build()).protocol(Protocol.HTTP_1_1).code(code).message("Fixture")
-        .apply { if (retryAfter != null) header("Retry-After", retryAfter) }.body("{}".toResponseBody()).build()
-
-    @Test
-    fun `quota waiting reports decreasing remaining time without delaying dispatch`() = runTest {
-        val url = "https://nhentai.net/api/v2/search"
-        val limiter = NhentaiRateLimiter(now = { testScheduler.currentTime })
-        val notices = mutableListOf<Pair<Long, Long>>()
-        val onWait: (Long) -> Unit = { notices.add(testScheduler.currentTime to it) }
-        repeat(10) { limiter.execute(url.toHttpUrl(), { false }, onWait) { response(url) }.close() }
-        assertTrue(notices.isEmpty())
-        limiter.execute(url.toHttpUrl(), { false }, onWait) { response(url) }.close()
-        assertEquals(listOf(0L to 60_000L, 15_000L to 45_000L, 30_000L to 30_000L, 45_000L to 15_000L), notices)
-        assertEquals(60_000L, testScheduler.currentTime)
-    }
-
-    @Test
-    fun `concurrent endpoints and queued callers merge wait notices for one client`() = runTest {
-        val limiter = NhentaiRateLimiter(now = { testScheduler.currentTime })
-        val search = "https://nhentai.net/api/v2/search"
-        val detail = "https://nhentai.net/api/v2/galleries/42"
-        limiter.observeLimit(search.toHttpUrl(), "60")
-        limiter.observeLimit(detail.toHttpUrl(), "30")
-        val notices = mutableListOf<Long>()
-        var sent = 0
-        listOf(search, search, search, detail).map { url ->
-            async {
-                limiter.execute(url.toHttpUrl(), { false }, onWait = { notices.add(testScheduler.currentTime) }) {
-                    sent++; response(url)
-                }.close()
-            }
-        }.awaitAll()
-        assertEquals(listOf(0L, 15_000L, 30_000L, 45_000L), notices)
-        assertEquals(4, sent)
-        assertEquals(60_000L, testScheduler.currentTime)
-    }
-
-    @Test
-    fun `canceling a wait stops all subsequent notices and sends no request`() = runTest {
-        val url = "https://nhentai.net/api/v2/search"
-        val limiter = NhentaiRateLimiter(now = { testScheduler.currentTime })
-        limiter.observeLimit(url.toHttpUrl(), "60")
-        val notices = mutableListOf<Long>()
-        var sent = 0
-        val pending = launch {
-            limiter.execute(url.toHttpUrl(), { false }, onWait = { notices.add(testScheduler.currentTime) }) {
-                sent++; response(url)
-            }.close()
-        }
-        testScheduler.runCurrent()
-        testScheduler.advanceTimeBy(20_000)
-        pending.cancelAndJoin()
-        assertEquals(listOf(0L, 15_000L), notices)
-        testScheduler.advanceUntilIdle()
-        testScheduler.advanceTimeBy(60_000)
-        testScheduler.runCurrent()
-        assertEquals(listOf(0L, 15_000L), notices)
-        assertEquals(0, sent)
-        limiter.execute(url.toHttpUrl(), { false }, onWait = { fail("No wait remains") }) { response(url) }.close()
-    }
-
-    @Test
-    fun `wait notices recompute an extended server pause and stop at the exact deadline`() = runTest {
-        val url = "https://nhentai.net/api/v2/search"
-        val limiter = NhentaiRateLimiter(now = { testScheduler.currentTime })
-        limiter.observeLimit(url.toHttpUrl(), "35")
-        val notices = mutableListOf<Pair<Long, Long>>()
-        val pending = async {
-            limiter.execute(url.toHttpUrl(), { false }, onWait = { notices.add(testScheduler.currentTime to it) }) {
-                response(url)
-            }.close()
-        }
-        testScheduler.runCurrent()
-        testScheduler.advanceTimeBy(10_000)
-        limiter.observeLimit(url.toHttpUrl(), "40")
-        pending.await()
-        assertEquals(listOf(0L to 35_000L, 15_000L to 35_000L, 30_000L to 20_000L, 45_000L to 5_000L), notices)
-        assertEquals(50_000L, testScheduler.currentTime)
-    }
-
-    @Test
-    fun `anonymous and authenticated search respect separate minute capacities under concurrency`() = runTest {
-        val url = "https://nhentai.net/api/v2/search"
-        for ((authenticated, capacity) in listOf(false to 10, true to 20)) {
-            val limiter = NhentaiRateLimiter(now = { testScheduler.currentTime })
-            val start = testScheduler.currentTime
-            val sent = mutableListOf<Long>()
-            (0..capacity).map {
-                async { limiter.execute(url.toHttpUrl(), { authenticated }) {
-                    sent.add(testScheduler.currentTime - start); response(url)
-                }.close() }
-            }.awaitAll()
-            assertEquals(List(capacity) { 0L } + 60_000L, sent)
-        }
-    }
-
-    @Test
-    fun `detail and related ids share endpoint quotas while tags keep their own quota`() = runTest {
-        for ((path, anonymous, authenticated) in listOf(
-            Triple("galleries/{id}", 20, 45), Triple("galleries/{id}/related", 12, 30),
-            Triple("tags/ids?ids={id}", 15, 15),
-        )) {
-            for ((signedIn, capacity) in listOf(false to anonymous, true to authenticated)) {
-                val limiter = NhentaiRateLimiter(now = { testScheduler.currentTime })
-                val start = testScheduler.currentTime
-                val times = mutableListOf<Long>()
-                repeat(capacity + 1) { index ->
-                    val url = "https://nhentai.net/api/v2/" + path.replace("{id}", (index + 1).toString())
-                    limiter.execute(url.toHttpUrl(), { signedIn }) {
-                        times.add(testScheduler.currentTime - start); response(url)
-                    }.close()
-                }
-                assertEquals(List(capacity) { 0L } + 60_000L, times, "$path signedIn=$signedIn")
-            }
-        }
-    }
-
-    @Test
-    fun `quota waits only for oldest remaining request and counts from response arrival`() = runTest {
-        val url = "https://nhentai.net/api/v2/search"
-        val limiter = NhentaiRateLimiter(now = { testScheduler.currentTime })
-        repeat(10) {
-            limiter.execute(url.toHttpUrl(), { false }) { delay(100); response(url) }.close()
-            delay(900)
-        }
-        assertEquals(10_000L, testScheduler.currentTime)
-        limiter.execute(url.toHttpUrl(), { false }) { response(url) }.close()
-        assertEquals(60_100L, testScheduler.currentTime)
-        limiter.execute(url.toHttpUrl(), { false }) { response(url) }.close()
-        assertEquals(61_100L, testScheduler.currentTime)
-    }
-
-    @Test
-    fun `429 closes response waits advertised seconds and does not automatically retry`() = runTest {
-        val url = "https://nhentai.net/api/v2/search"
-        val limiter = NhentaiRateLimiter(now = { testScheduler.currentTime })
-        var calls = 0
-        var closed = false
-        val body = object : okhttp3.ResponseBody() {
-            override fun contentType(): okhttp3.MediaType? = null
-            override fun contentLength() = 0L
-            override fun source(): okio.BufferedSource = okio.Buffer()
-            override fun close() { closed = true }
-        }
-        try {
-            limiter.execute(url.toHttpUrl(), { false }) {
-                calls++; response(url, 429, "7").newBuilder().body(body).build()
-            }
-            fail<Unit>("429 was accepted")
-        } catch (_: org.skepsun.kototoro.parsers.exception.TooManyRequestExceptions) { }
-        assertTrue(closed)
-        assertEquals(1, calls)
-        limiter.execute(url.toHttpUrl(), { false }) { calls++; response(url) }.close()
-        assertEquals(7_000L, testScheduler.currentTime)
-        assertEquals(2, calls)
-    }
-
-    @Test
-    fun `429 HTTP dates missing and malformed delays have explicit fallback`() = runTest {
-        val url = "https://nhentai.net/api/v2/search"
-        val wall = java.time.Instant.parse("2026-11-17T10:00:00Z").toEpochMilli()
-        val date = java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME.format(
-            java.time.Instant.ofEpochMilli(wall + 9000).atZone(java.time.ZoneOffset.UTC),
-        )
-        for ((header, expected) in listOf(date to 9000L, null to 60_000L, "bad" to 60_000L, "-1" to 60_000L)) {
-            val limiter = NhentaiRateLimiter(now = { testScheduler.currentTime }, wallTime = { wall })
-            val start = testScheduler.currentTime
-            try {
-                limiter.execute(url.toHttpUrl(), { false }) { response(url, 429, header) }
-                fail<Unit>("429 was accepted")
-            } catch (_: org.skepsun.kototoro.parsers.exception.TooManyRequestExceptions) { }
-            limiter.execute(url.toHttpUrl(), { false }) { response(url) }.close()
-            assertEquals(expected, testScheduler.currentTime - start, "$header")
-        }
-    }
-
-    @Test
-    fun `host translated 429 preserves cooldown and canceled waiter reserves nothing`() = runTest {
-        val url = "https://nhentai.net/api/v2/search"
-        val limiter = NhentaiRateLimiter(now = { testScheduler.currentTime })
-        try {
-            limiter.execute(url.toHttpUrl(), { false }) {
-                limiter.observeLimit(url.toHttpUrl(), "8")
-                throw org.skepsun.kototoro.parsers.exception.TooManyRequestExceptions(url, 8000)
-            }
-            fail<Unit>("429 was accepted")
-        } catch (_: org.skepsun.kototoro.parsers.exception.TooManyRequestExceptions) { }
-        var sent = 0
-        val waiting = launch { limiter.execute(url.toHttpUrl(), { false }) { sent++; response(url) }.close() }
-        testScheduler.runCurrent()
-        assertEquals(0, sent)
-        waiting.cancelAndJoin()
-        repeat(10) { limiter.execute(url.toHttpUrl(), { false }) { sent++; response(url) }.close() }
-        assertEquals(8000L, testScheduler.currentTime)
-        assertEquals(10, sent)
-    }
-
-    @Test
-    fun `cooldown only blocks its endpoint and origin while image and HTML remain unqueued`() = runTest {
-        val limiter = NhentaiRateLimiter(now = { testScheduler.currentTime })
-        limiter.observeLimit("https://nhentai.net/api/v2/search".toHttpUrl(), "60")
-        for (url in listOf("https://nhentai.net/api/v2/tags/ids?ids=1",
-            "https://nhentai.net/api/v2/galleries/1", "https://nhentai.net/api/v2/galleries/1/related",
-            "https://nhentai.net/api/v2/cdn", "https://nhentai.net/", "https://thumb.test/cover.jpg",
-            "https://other.test/api/v2/search", "https://nhentai.net:8443/api/v2/search")) {
-            limiter.execute(url.toHttpUrl(), { false }) { response(url) }.close()
-            assertEquals(0L, testScheduler.currentTime, url)
-        }
-    }
-
-    @Test
-    fun `login increases capacity and logout retains already used requests`() = runTest {
-        val url = "https://nhentai.net/api/v2/search"
-        val limiter = NhentaiRateLimiter(now = { testScheduler.currentTime })
-        repeat(10) { limiter.execute(url.toHttpUrl(), { false }) { response(url) }.close() }
-        repeat(10) { limiter.execute(url.toHttpUrl(), { true }) { response(url) }.close() }
-        assertEquals(0L, testScheduler.currentTime)
-        limiter.execute(url.toHttpUrl(), { false }) { response(url) }.close()
-        assertEquals(60_000L, testScheduler.currentTime)
-    }
-
-    @Test
-    fun `all parser instances with one network client share quota and other clients are isolated`() = runTest {
-        val first = OkHttpClient()
-        val url = "https://nhentai.net/api/v2/search"
-        val limiter = NhentaiRateLimiter.forClient(first)
-        limiter.observeLimit(url.toHttpUrl(), "60")
-        var blockedSent = false
-        val pending = launch {
-            NhentaiRateLimiter.forClient(first).execute(url.toHttpUrl(), { false }) {
-                blockedSent = true; response(url)
-            }.close()
-        }
-        testScheduler.runCurrent()
-        NhentaiRateLimiter.forClient(OkHttpClient()).execute(url.toHttpUrl(), { false }) { response(url) }.close()
-        assertFalse(blockedSent)
-        pending.cancelAndJoin()
-    }
-
-    @Test
-    fun `canceled dispatched request still counts but canceled queued request does not`() = runTest {
-        val url = "https://nhentai.net/api/v2/search"
-        val limiter = NhentaiRateLimiter(now = { testScheduler.currentTime })
-        val sent = launch { limiter.execute(url.toHttpUrl(), { false }) { delay(1000); response(url) }.close() }
-        testScheduler.runCurrent()
-        sent.cancelAndJoin()
-        repeat(9) { limiter.execute(url.toHttpUrl(), { false }) { response(url) }.close() }
-        assertEquals(0L, testScheduler.currentTime)
-        limiter.execute(url.toHttpUrl(), { false }) { response(url) }.close()
-        assertEquals(60_000L, testScheduler.currentTime)
-    }
-
-    @Test
-    fun `expired cooldown does not suppress a fresh host retry delay`() = runTest {
-        val url = "https://nhentai.net/api/v2/search"
-        val limiter = NhentaiRateLimiter(now = { testScheduler.currentTime })
-        limiter.observeLimit(url.toHttpUrl(), "0")
-        try {
-            limiter.execute(url.toHttpUrl(), { false }) {
-                throw org.skepsun.kototoro.parsers.exception.TooManyRequestExceptions(url, 10_000)
-            }
-            fail<Unit>("429 was accepted")
-        } catch (_: org.skepsun.kototoro.parsers.exception.TooManyRequestExceptions) { }
-        limiter.execute(url.toHttpUrl(), { false }) { response(url) }.close()
-        assertTrue(testScheduler.currentTime in 9000L..10_000L)
-    }
 }
 
 class NhentaiCdnCacheTest {

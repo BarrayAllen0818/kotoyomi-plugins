@@ -49,14 +49,14 @@ class NhentaiParserIntegrationTest {
         println("NH_NUMBER_LIVE id=385440 detail_requests=1 keyword_requests=0 next_page=empty cover=verified")
     }
     @Test
-    fun `anonymous factory search waits for quota and related works use a separate endpoint`() = runBlocking {
+    fun `anonymous factory search paginates and related works use a separate endpoint`() = runBlocking {
         val context = NhIntegrationContext()
         val parser = ContentParserSource.NHENTAI.newParser(context).also { context.parser = it }
         val filter = ContentListFilter(query = "language:chinese")
         var first: org.skepsun.kototoro.parsers.model.Content? = null
         val started = System.nanoTime()
         var offset = 0
-        repeat(11) { index ->
+        repeat(2) { index ->
             val items = parser.getList(offset, SortOrder.NEWEST, filter)
             assertTrue(items.isNotEmpty(), "NH page ${index + 1} is empty")
             if (first == null) first = items.first()
@@ -64,17 +64,15 @@ class NhentaiParserIntegrationTest {
             println("NH_RATE_LIVE search_page=${index + 1} items=${items.size} elapsed_ms=${(System.nanoTime() - started) / 1_000_000}")
         }
         val search = context.requests.filter { it.path == "/api/v2/search" }
-        assertTrue(search.size == 11 && search.all { it.status == 200 })
-        assertTrue(search.last().startedAt - search.first().startedAt >= TimeUnit.SECONDS.toNanos(60),
-            "The eleventh anonymous search was dispatched before the first quota window ended")
+        assertTrue(search.size == 2 && search.all { it.status == 200 })
         val related = parser.getRelatedContent(requireNotNull(first))
         assertTrue(related.isNotEmpty(), "NH related endpoint returned no works for the live sample")
         assertTrue(related.none { it.id == first!!.id })
         assertTrue(context.requests.count { it.path.endsWith("/related") } == 1)
-        assertTrue(context.requests.count { it.path == "/api/v2/search" } == 11,
+        assertTrue(context.requests.count { it.path == "/api/v2/search" } == 2,
             "Loading related works issued additional searches")
         checkImage(context, requireNotNull(related.first().coverUrl), mapOf("Referer" to "https://nhentai.net/"))
-        println("NH_RATE_LIVE related=${related.size} search_requests=11 related_requests=1")
+        println("NH_RATE_LIVE related=${related.size} search_requests=2 related_requests=1")
     }
 
     @Test

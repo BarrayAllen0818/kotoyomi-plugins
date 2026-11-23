@@ -25,7 +25,6 @@ import org.skepsun.kototoro.parsers.model.ContentTag
 import org.skepsun.kototoro.parsers.model.ContentTagGroup
 import org.skepsun.kototoro.parsers.model.SortOrder
 import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -41,11 +40,9 @@ import org.skepsun.kototoro.parsers.util.parseJson
 import org.skepsun.kototoro.parsers.util.parseJsonArray
 import org.skepsun.kototoro.parsers.util.urlEncoded
 import org.json.JSONObject
-import org.jsoup.HttpStatusException
 import org.skepsun.kototoro.parsers.exception.TooManyRequestExceptions
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
-import java.util.ArrayDeque
 import org.skepsun.kototoro.parsers.model.ContentType
 import java.util.EnumSet
 
@@ -90,7 +87,6 @@ internal class NhentaiParser(context: ContentLoaderContext) :
     private companion object {
         // List sessions create separate parsers, while the website rotates one shared browser session.
         val authStates = java.util.WeakHashMap<okhttp3.CookieJar, MutableMap<String, WebAuthState>>()
-        val waitSequence = java.util.concurrent.atomic.AtomicLong()
     }
 
     override val configKeyDomain = org.skepsun.kototoro.parsers.config.ConfigKey.Domain("nhentai.net")
@@ -857,37 +853,13 @@ internal class NhentaiParser(context: ContentLoaderContext) :
         .add("User-Agent", context.getDefaultUserAgent())
         .build()
 
-    private val requestLimiter: NhentaiRateLimiter
-        get() = NhentaiRateLimiter.forClient(context.httpClient)
-
-    private suspend fun httpGet(url: String, headers: Headers): Response {
-        val target = url.toHttpUrl()
-        val waitKey = target.encodedPath + "#" + waitSequence.incrementAndGet()
-        try { return requestLimiter.execute(target, {
-            val refreshUrl = target.resolve("/auth/refresh")!!
-            context.cookieJar.loadForRequest(refreshUrl).any {
-                it.name in setOf("access_token", "refresh_token") && it.value.isNotBlank()
-            }
-        }, onWait = { remainingMillis ->
-            val seconds = remainingMillis / 1000 + if (remainingMillis % 1000 > 0) 1 else 0
-            context.showToast(if (requestLimiter.recoveryTimeKnown(target)) "NH 请求正在等待，约剩 $seconds 秒"
-                else "NH 网站限制请求，恢复时间未知", isLong = true)
-        }, onState = { kind, remaining -> reportWait(waitKey, kind, remaining) }) {
-            try { kotlinx.coroutines.withTimeout(30_000) { webClient.httpGet(target, headers) } }
-            catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-                currentCoroutineContext().ensureActive()
-                throw java.net.SocketTimeoutException("NH 请求超过 30 秒").apply { initCause(e) }
-            }
-        } } finally { reportWait(waitKey, "", 0) }
-    }
-
-    private fun reportWait(key: String, kind: String, remaining: Long) {
-        // Optional host bridge; older applications keep using Toast without an ABI change.
-        val method = context.javaClass.methods.firstOrNull {
-            it.name == "reportSourceRequestWait" && it.parameterCount == 4
-        } ?: return
-        runCatching { method.invoke(context, source.name, key, kind, remaining) }
-    }
+    private suspend fun httpGet(url: String, headers: Headers): Response =
+        try {
+            kotlinx.coroutines.withTimeout(30_000) { webClient.httpGet(url, headers) }
+        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+            currentCoroutineContext().ensureActive()
+            throw java.net.SocketTimeoutException("NH 请求超过 30 秒").apply { initCause(e) }
+        }
 
     internal suspend fun imageCandidates(url: String): String? {
         val original = url.toHttpUrlOrNull() ?: return null
@@ -902,17 +874,32 @@ internal class NhentaiParser(context: ContentLoaderContext) :
 
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
-        fun proceed(next: okhttp3.Request): Response = chain.proceed(next).also { response ->
-            if (response.code == 429) requestLimiter.observeLimit(request.url, response.header("Retry-After"))
-            if (response.code == 429 && request.url.encodedPath.startsWith("/galleries/")) {
-                requestLimiter.notifyImageLimit { context.showToast("NH 图片请求受限，请稍后重试", true) }
+        val origin = "https://$domain/".toHttpUrlOrNull()
+        fun proceed(next: okhttp3.Request): Response {
+            val response = chain.proceed(next)
+            val url = response.request.url
+            if (response.code != 429 || origin == null || url.host != origin.host ||
+                url.port != origin.port || url.scheme != origin.scheme || !url.encodedPath.startsWith("/api/v2/")) {
+                return response
             }
+            val retryAfter = response.header("Retry-After")?.trim()
+            response.close()
+            val delayMillis = retryAfter?.toLongOrNull()?.let {
+                java.util.concurrent.TimeUnit.SECONDS.toMillis(it.coerceAtLeast(0L))
+            } ?: retryAfter?.let {
+                runCatching {
+                    java.time.Duration.between(
+                        java.time.Instant.now(),
+                        ZonedDateTime.parse(it, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant(),
+                    ).toMillis().coerceAtLeast(0L)
+                }.getOrNull()
+            } ?: 0L
+            throw TooManyRequestExceptions(url.toString(), delayMillis)
         }
         val prepared = request.newBuilder()
             .header("Referer", request.header("Referer") ?: "https://$domain/")
             .header("User-Agent", context.getDefaultUserAgent())
             .build()
-        val origin = "https://$domain/".toHttpUrlOrNull()
         if (origin == null || request.url.scheme != origin.scheme || request.url.host != origin.host ||
             request.url.port != origin.port || !request.url.encodedPath.startsWith("/api/v2/")) {
             return proceed(prepared)
@@ -1540,163 +1527,6 @@ internal data class NhentaiCdnConfig(
 )
 
 /** Per-client, per-origin NH quotas; waiting stays outside OkHttp and remains cancellable. */
-internal class NhentaiRateLimiter(
-    private val now: () -> Long = { System.nanoTime() / 1_000_000L },
-    private val wallTime: () -> Long = System::currentTimeMillis,
-) {
-    private enum class Endpoint(val anonymous: Int, val authenticated: Int) {
-        SEARCH(10, 20), DETAILS(20, 45), TAGS(15, 15), RELATED(12, 30), USER(45, 45),
-    }
-
-    private class Bucket {
-        val mutex = Mutex()
-        val sent = ArrayDeque<Long>()
-        var blockedUntil: Long? = null
-        var recoveryKnown = true
-    }
-
-    private val buckets = HashMap<Pair<String, Endpoint>, Bucket>()
-    private val noticeLock = Any()
-    private var lastNoticeAt: Long? = null
-    private var lastLimitNoticeAt: Long? = null
-
-    private fun notifyLimit(wait: Long, notice: (Long) -> Unit) {
-        val notify = synchronized(noticeLock) {
-            val time = now()
-            if (lastLimitNoticeAt?.let { time - it < NOTICE_INTERVAL_MILLIS } == true) false else {
-                lastLimitNoticeAt = time
-                lastNoticeAt = time
-                true
-            }
-        }
-        if (notify) notice(wait)
-    }
-
-    private fun notifyWaiting(wait: Long, onWait: (Long) -> Unit) {
-        val notify = synchronized(noticeLock) {
-            val time = now()
-            if (lastNoticeAt?.let { time - it < NOTICE_INTERVAL_MILLIS } == true) {
-                false
-            } else {
-                lastNoticeAt = time
-                true
-            }
-        }
-        if (notify) onWait(wait)
-    }
-
-    private fun endpoint(url: HttpUrl): Endpoint? = when {
-        url.encodedPath == "/api/v2/search" -> Endpoint.SEARCH
-        url.encodedPath == "/api/v2/tags/ids" -> Endpoint.TAGS
-        url.encodedPath == "/api/v2/user" -> Endpoint.USER
-        url.encodedPath.matches(Regex("/api/v2/galleries/[1-9][0-9]*/related")) -> Endpoint.RELATED
-        url.encodedPath.matches(Regex("/api/v2/galleries/[1-9][0-9]*")) -> Endpoint.DETAILS
-        else -> null
-    }
-
-    private fun bucket(url: HttpUrl, endpoint: Endpoint): Bucket = synchronized(buckets) {
-        buckets.getOrPut(url.resolve("/")!!.toString() to endpoint) { Bucket() }
-    }
-
-    fun observeLimit(url: HttpUrl, retryAfter: String?) {
-        val endpoint = endpoint(url) ?: return
-        val seconds = retryAfter?.trim()?.toLongOrNull()?.takeIf { it >= 0 }
-        val millis = seconds?.coerceAtMost(Long.MAX_VALUE / 1000)?.times(1000)
-            ?: retryAfter?.let {
-                runCatching {
-                    (ZonedDateTime.parse(it, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().toEpochMilli() - wallTime())
-                        .coerceAtLeast(0L)
-                }.getOrNull()
-            } ?: WINDOW_MILLIS
-        val bucket = bucket(url, endpoint)
-        synchronized(bucket) { bucket.recoveryKnown = retryAfter?.trim()?.toLongOrNull()?.let { it >= 0 } == true ||
-            retryAfter?.let { runCatching { ZonedDateTime.parse(it, DateTimeFormatter.RFC_1123_DATE_TIME) }.isSuccess } == true }
-        block(bucket, millis)
-    }
-
-    fun recoveryTimeKnown(url: HttpUrl): Boolean {
-        val endpoint = endpoint(url) ?: return false
-        val bucket = bucket(url, endpoint)
-        return synchronized(bucket) { bucket.blockedUntil == null || bucket.recoveryKnown }
-    }
-
-    fun notifyImageLimit(notice: () -> Unit) = notifyLimit(0) { notice() }
-
-    private fun block(bucket: Bucket, millis: Long) = synchronized(bucket) {
-        val time = now()
-        val until = time + millis.coerceAtMost(Long.MAX_VALUE - time.coerceAtLeast(0L))
-        bucket.blockedUntil = maxOf(bucket.blockedUntil ?: until, until)
-    }
-
-    suspend fun execute(
-        url: HttpUrl,
-        authenticated: () -> Boolean,
-        onWait: (Long) -> Unit = {},
-        onState: (String, Long) -> Unit = { _, _ -> },
-        load: suspend () -> Response,
-    ): Response {
-        val endpoint = endpoint(url) ?: return load()
-        val bucket = bucket(url, endpoint)
-        return bucket.mutex.withLock {
-            while (true) {
-                currentCoroutineContext().ensureActive()
-                val limit = if (authenticated()) endpoint.authenticated else endpoint.anonymous
-                val wait = synchronized(bucket) {
-                    val time = now()
-                    while (bucket.sent.isNotEmpty() && time - bucket.sent.first >= WINDOW_MILLIS) bucket.sent.removeFirst()
-                    if (bucket.blockedUntil?.let { it <= time } == true) bucket.blockedUntil = null
-                    val quotaWait = if (bucket.sent.size >= limit) WINDOW_MILLIS - (time - bucket.sent.first) else 0L
-                    maxOf(quotaWait, (bucket.blockedUntil?.minus(time) ?: 0L).coerceAtLeast(0L))
-                }
-                if (wait <= 0L) break
-                onState(if (synchronized(bucket) { bucket.blockedUntil != null })
-                    if (recoveryTimeKnown(url)) "limited" else "limited_unknown" else "quota", wait)
-                notifyWaiting(wait, onWait)
-                delay(minOf(wait, NOTICE_INTERVAL_MILLIS))
-            }
-            currentCoroutineContext().ensureActive()
-            onState("loading", 0)
-            var rateLimited = false
-            try {
-                val response = load()
-                if (response.code == 429) {
-                    observeLimit(url, response.header("Retry-After"))
-                    response.close()
-                    throw TooManyRequestExceptions(url.toString(), synchronized(bucket) {
-                        (bucket.blockedUntil?.minus(now()) ?: WINDOW_MILLIS).coerceAtLeast(0L)
-                    })
-                }
-                response
-            } catch (e: Exception) {
-                if (e is TooManyRequestExceptions || e is HttpStatusException && e.statusCode == 429) {
-                    rateLimited = true
-                    // The interceptor records headers before either host or WebClient closes the response.
-                    val retry = synchronized(bucket) { bucket.blockedUntil?.minus(now()) }
-                        ?: (e as? TooManyRequestExceptions)?.getRetryDelay()?.takeIf { it >= 0L }
-                        ?: WINDOW_MILLIS
-                    block(bucket, retry.coerceAtLeast(0L))
-                    onState(if (recoveryTimeKnown(url)) "limited" else "limited_unknown", retry)
-                    notifyLimit(retry, onWait)
-                    throw if (e is TooManyRequestExceptions) e else TooManyRequestExceptions(url.toString(), retry)
-                }
-                throw e
-            } finally {
-                // A canceled/failed dispatched request may have reached the server; count it conservatively.
-                if (!rateLimited) synchronized(bucket) { bucket.sent.addLast(now()) }
-            }
-        }
-    }
-
-    companion object {
-        private const val WINDOW_MILLIS = 60_000L
-        private const val NOTICE_INTERVAL_MILLIS = 15_000L
-        private val clients = java.util.WeakHashMap<okhttp3.OkHttpClient, NhentaiRateLimiter>()
-        fun forClient(client: okhttp3.OkHttpClient): NhentaiRateLimiter = synchronized(clients) {
-            clients.getOrPut(client) { NhentaiRateLimiter() }
-        }
-    }
-}
-
 /** NH 局部串行缓存；旧域操作可以完成，但不能发布到当前域缓存。 */
 internal class NhentaiCdnCache(private val nanoTime: () -> Long = System::nanoTime) {
     private data class Entry(val domain: String, val value: NhentaiCdnConfig, val validatedAt: Long)
